@@ -140,6 +140,8 @@ source "drivers/staging/Kconfig"
 
 source "drivers/platform/Kconfig"
 
+source "drivers/soc/Kconfig"
+
 source "drivers/clk/Kconfig"
 
 source "drivers/hwspinlock/Kconfig"
@@ -153,8 +155,6 @@ source "drivers/iommu/Kconfig"
 source "drivers/remoteproc/Kconfig"
 
 source "drivers/rpmsg/Kconfig"
-
-source "drivers/soc/Kconfig"
 
 source "drivers/devfreq/Kconfig"
 
@@ -194,6 +194,31 @@ source "drivers/sensors/Kconfig"
 
 source "drivers/firmware/Kconfig"
 
+source "drivers/huawei/Kconfig"
+
+source "drivers/huawei_cc/Kconfig"
+
 source "drivers/bif/Kconfig"
 
+source "drivers/gud/Kconfig"
+
+source "drivers/dsm/Kconfig"
+
+source "drivers/huawei_platform/Kconfig"
+
+source "drivers/hwusb/Kconfig"
+
+source "drivers/hwbfm/Kconfig"
+
+source "drivers/hw_fac_info/Kconfig"
+
+source "drivers/devdetect/Kconfig"
+
+source "drivers/srecorder/Kconfig"
+
+source "drivers/devkit/lcdkit/Kconfig"
+
+source "drivers/devkit/tpkit/Kconfig"
+
+source "drivers/cpu_stress/Kconfig"
 endmenu

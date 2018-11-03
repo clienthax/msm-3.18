@@ -16,6 +16,9 @@
 #include <asm/uaccess.h>
 #include <asm/page.h>
 
+#ifdef CONFIG_ARM
+#define PAGE_ALLOC_COUNT    4
+#endif
 
 /*
  * seq_files have a buffer which can may overflow. When this happens a larger
@@ -35,10 +38,28 @@ static void seq_set_overflow(struct seq_file *m)
 static void *seq_buf_alloc(unsigned long size)
 {
 	void *buf;
+#ifdef CONFIG_ARM
+    gfp_t gfp = GFP_KERNEL;
 
+    /*
+     * use vmalloc allocations directly for more than 16KB size.
+     */
+    if (size > PAGE_ALLOC_COUNT * PAGE_SIZE) {
+        buf = vmalloc(size);
+    } else  {
+        if (size > PAGE_SIZE)
+            gfp |= __GFP_NORETRY | __GFP_NOWARN;
+
+        buf = kmalloc(size, gfp);
+
+        if (!buf && size > PAGE_SIZE)
+            buf = vmalloc(size);
+    }
+#else
 	buf = kmalloc(size, GFP_KERNEL | __GFP_NOWARN);
 	if (!buf && size > PAGE_SIZE)
 		buf = vmalloc(size);
+#endif
 	return buf;
 }
 
@@ -69,10 +90,9 @@ int seq_open(struct file *file, const struct seq_operations *op)
 	memset(p, 0, sizeof(*p));
 	mutex_init(&p->lock);
 	p->op = op;
-
-	// No refcounting: the lifetime of 'p' is constrained
-	// to the lifetime of the file.
-	p->file = file;
+#ifdef CONFIG_USER_NS
+	p->user_ns = file->f_cred->user_ns;
+#endif
 
 	/*
 	 * Wrappers around seq_open(e.g. swaps_open) need to be
@@ -220,10 +240,8 @@ ssize_t seq_read(struct file *file, char __user *buf, size_t size, loff_t *ppos)
 		size -= n;
 		buf += n;
 		copied += n;
-		if (!m->count) {
-			m->from = 0;
+		if (!m->count)
 			m->index++;
-		}
 		if (!size)
 			goto Done;
 	}

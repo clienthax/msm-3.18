@@ -183,12 +183,11 @@ int dpcm_dapm_stream_event(struct snd_soc_pcm_runtime *fe, int dir,
 
 		dev_dbg(be->dev, "ASoC: BE %s event %d dir %d\n",
 				be->dai_link->name, event, dir);
-
-		if ((event == SND_SOC_DAPM_STREAM_STOP) &&
-		    (be->dpcm[dir].users >= 1))
+		if (event == SND_SOC_DAPM_STREAM_STOP && be->dpcm[dir].users >= 1) {
+			pr_debug("%s Don't close BE \n", __func__);
 			continue;
-
-		snd_soc_dapm_stream_event(be, dir, event);
+		}
+			snd_soc_dapm_stream_event(be, dir, event);
 	}
 
 	snd_soc_dapm_stream_event(fe, dir, event);
@@ -1715,10 +1714,8 @@ int dpcm_be_dai_shutdown(struct snd_soc_pcm_runtime *fe, int stream)
 			continue;
 
 		if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_FREE) &&
-		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_OPEN)) {
-			soc_pcm_hw_free(be_substream);
-			be->dpcm[stream].state = SND_SOC_DPCM_STATE_HW_FREE;
-		}
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_OPEN))
+			continue;
 
 		dev_dbg(be->dev, "ASoC: close BE %s\n",
 			dpcm->fe->dai_link->name);
@@ -2323,10 +2320,6 @@ void dpcm_be_dai_prepare_async(struct snd_soc_pcm_runtime *fe, int stream,
 							    dpcm, domain);
 		} else {
 			dpcm_async[i++] = dpcm;
-			if (i == DPCM_MAX_BE_USERS) {
-				dev_dbg(fe->dev, "ASoC: MAX backend users!\n");
-				break;
-			}
 		}
 	}
 

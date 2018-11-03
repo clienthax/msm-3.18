@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -16,9 +16,66 @@
 
 #include <linux/device.h>
 #include <linux/sched.h>
+#ifdef CONFIG_HUAWEI_WIFI
+
+extern  int wlan_log_debug_mask;
+#define WLAN_ERROR  1
+#define WLAN_INFO 2
+#define WLAN_DBG  3
+
+/* error log */
+#ifndef wlan_log_err
+#define wlan_log_err(x...)                \
+do {                                     \
+    if( wlan_log_debug_mask >= WLAN_ERROR )   \
+    {                                   \
+        pr_err("wlan:" x); \
+    }                                   \
+                                        \
+} while(0)
+#endif
+/* opened at all times default*/
+
+/* info log */
+#ifndef wlan_log_info
+#define wlan_log_info(x...)               \
+do {                                     \
+    if( wlan_log_debug_mask >= WLAN_INFO)  \
+    {                                   \
+        pr_err("wlan:" x); \
+    }                                   \
+                                        \
+} while(0)
+#endif
+
+
+/* debug log */
+#ifndef wlan_log_debug
+#define wlan_log_debug(x...)              \
+do {                                     \
+    if ( wlan_log_debug_mask >= WLAN_DBG )   \
+    {                                   \
+        pr_err("wlan:" x); \
+    }                                   \
+                                        \
+} while(0)
+#endif
+
+#endif
 
 #define IRIS_REGULATORS		4
 #define PRONTO_REGULATORS	3
+
+#ifdef CONFIG_HUAWEI_DSM
+#include <dsm/dsm_pub.h>
+
+#define DSM_WIFI_BUF_SIZE           (1024)   /*Byte*/
+#define DSM_WIFI_MOD_NAME           "dsm_wifi"
+
+int wifi_dsm_register(void);
+int wifi_dsm_report_num(int dsm_err_no, char *err_msg, int err_code);
+int wifi_dsm_report_info(int error_no, void *log, int size);
+#endif
 
 enum wcnss_opcode {
 	WCNSS_WLAN_SWITCH_OFF = 0,
@@ -38,12 +95,11 @@ struct vregs_level {
 };
 
 struct wcnss_wlan_config {
-	bool	wcn_external_gpio_support;
 	int	use_48mhz_xo;
 	int	is_pronto_vadc;
 	int	is_pronto_v3;
 	void __iomem	*msm_wcnss_base;
-	unsigned int iris_id;
+	int	iris_id;
 	int	vbatt;
 	struct vregs_level pronto_vlevel[PRONTO_REGULATORS];
 	struct vregs_level iris_vlevel[IRIS_REGULATORS];
@@ -76,7 +132,6 @@ enum {
 #define HAVE_CBC_DONE 1
 #define HAVE_WCNSS_RX_BUFF_COUNT 1
 #define HAVE_WCNSS_SNOC_HIGH_FREQ_VOTING 1
-#define HAVE_WCNSS_5G_DISABLE 1
 #define WLAN_MAC_ADDR_SIZE (6)
 #define WLAN_RF_REG_ADDR_START_OFFSET	0x3
 #define WLAN_RF_REG_DATA_START_OFFSET	0xf
@@ -92,6 +147,15 @@ enum {
 #define WLAN_RF_DATA2_SHIFT		2
 #define PRONTO_PMU_OFFSET       0x1004
 #define WCNSS_PMU_CFG_GC_BUS_MUX_SEL_TOP   BIT(5)
+
+#ifdef CONFIG_HUAWEI_WIFI
+#define NO_AUTODETECT_XO    1
+const int get_hw_wifi_no_autodetect_xo(void);
+const void *get_hw_wifi_pubfile_id(void);
+const void *get_hw_wifi_ini_type(void);
+void construct_nvbin_with_pubfd(char *nvbin_path);
+int construct_configini_with_ini_type(char *configini_path);
+#endif
 
 struct device *wcnss_wlan_get_device(void);
 void wcnss_get_monotonic_boottime(struct timespec *ts);
@@ -120,14 +184,13 @@ int wcnss_get_wlan_mac_address(char mac_addr[WLAN_MAC_ADDR_SIZE]);
 void wcnss_allow_suspend(void);
 void wcnss_prevent_suspend(void);
 int wcnss_hardware_type(void);
-void *wcnss_prealloc_get(size_t size);
+void *wcnss_prealloc_get(unsigned int size);
 int wcnss_prealloc_put(void *ptr);
 void wcnss_reset_fiq(bool clk_chk_en);
 void wcnss_suspend_notify(void);
 void wcnss_resume_notify(void);
 void wcnss_riva_log_debug_regs(void);
 void wcnss_pronto_log_debug_regs(void);
-void wcnss_pronto_dump_regs(void);
 int wcnss_is_hw_pronto_ver3(void);
 int wcnss_device_ready(void);
 bool wcnss_cbc_complete(void);
@@ -136,7 +199,6 @@ void wcnss_riva_dump_pmic_regs(void);
 int wcnss_xo_auto_detect_enabled(void);
 u32 wcnss_get_wlan_rx_buff_count(void);
 int wcnss_wlan_iris_xo_mode(void);
-int wcnss_wlan_dual_band_disabled(void);
 void wcnss_flush_work(struct work_struct *work);
 void wcnss_flush_delayed_work(struct delayed_work *dwork);
 void wcnss_init_work(struct work_struct *work , void *callbackptr);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +25,14 @@
 #include "mdss_panel.h"
 #include "mdss_debug.h"
 #include "mdss_mdp_trace.h"
+#ifdef CONFIG_LCDKIT_DRIVER
+#include <linux/lcdkit_dsm.h>
+#include "lcdkit_dsi_status.h"
+#else
+#include <linux/hw_lcd_common.h>
+#endif
+
+extern unsigned int cpufreq_get(unsigned int cpu);
 
 /* wait for at least 2 vsyncs for lowest refresh rate (24hz) */
 #define VSYNC_TIMEOUT_US 100000
@@ -824,6 +832,11 @@ static int mdss_mdp_video_ctx_stop(struct mdss_mdp_ctl *ctl,
 
 	mutex_lock(&ctl->offlock);
 	if (ctx->timegen_en) {
+	/*cancle the esd delay work*/
+#ifdef CONFIG_LCDKIT_DRIVER
+		mdss_dsi_status_check_ctl(ctl->mfd,false);
+#endif
+
 		rc = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_BLANK, NULL,
 			CTL_INTF_EVENT_FLAG_DEFAULT);
 		if (rc == -EBUSY) {
@@ -833,8 +846,7 @@ static int mdss_mdp_video_ctx_stop(struct mdss_mdp_ctl *ctl,
 		}
 		WARN(rc, "intf %d blank error (%d)\n", ctl->intf_num, rc);
 
-		frame_rate = mdss_panel_get_framerate(pinfo,
-				FPS_RESOLUTION_HZ);
+		frame_rate = mdss_panel_get_framerate(pinfo);
 		if (!(frame_rate >= 24 && frame_rate <= 240))
 			frame_rate = 24;
 
@@ -957,8 +969,6 @@ static void mdss_mdp_video_vsync_intr_done(void *arg)
 
 	vsync_time = ktime_get();
 	ctl->vsync_cnt++;
-
-	mdss_debug_frc_add_vsync_sample(ctl, vsync_time);
 
 	MDSS_XLOG(ctl->num, ctl->vsync_cnt, ctl->vsync_cnt);
 
@@ -1103,6 +1113,14 @@ static void mdss_mdp_video_underrun_intr_done(void *arg)
 	pr_debug("display underrun detected for ctl=%d count=%d\n", ctl->num,
 			ctl->underrun_cnt);
 
+#ifdef CONFIG_HUAWEI_DSM
+#ifdef CONFIG_LCDKIT_DRIVER
+	lcdkit_underrun_dsm_report(ctl->num,ctl->underrun_cnt, 0, 0, 0);
+#else
+	mdp_underrun_dsm_report(ctl->num,ctl->underrun_cnt);
+#endif
+#endif
+
 	if (!test_bit(MDSS_CAPS_3D_MUX_UNDERRUN_RECOVERY_SUPPORTED,
 		ctl->mdata->mdss_caps_map) &&
 		(ctl->opmode & MDSS_MDP_CTL_OP_PACK_3D_ENABLE))
@@ -1224,7 +1242,7 @@ static int mdss_mdp_video_fps_update(struct mdss_mdp_video_ctx *ctx,
 	return rc;
 }
 
-static int mdss_mdp_video_wait4vsync(struct mdss_mdp_ctl *ctl)
+static int mdss_mdp_video_dfps_wait4vsync(struct mdss_mdp_ctl *ctl)
 {
 	int rc = 0;
 	struct mdss_mdp_video_ctx *ctx;
@@ -1235,8 +1253,6 @@ static int mdss_mdp_video_wait4vsync(struct mdss_mdp_ctl *ctl)
 		return -ENODEV;
 	}
 
-	MDSS_XLOG(ctl->num, ctl->vsync_cnt, XLOG_FUNC_ENTRY);
-
 	video_vsync_irq_enable(ctl, true);
 	reinit_completion(&ctx->vsync_comp);
 	rc = wait_for_completion_timeout(&ctx->vsync_comp,
@@ -1246,7 +1262,6 @@ static int mdss_mdp_video_wait4vsync(struct mdss_mdp_ctl *ctl)
 		pr_warn("vsync timeout %d fallback to poll mode\n",
 			ctl->num);
 		rc = mdss_mdp_video_pollwait(ctl);
-		MDSS_XLOG(ctl->num, ctl->vsync_cnt);
 		if (rc) {
 			pr_err("error polling for vsync\n");
 			MDSS_XLOG_TOUT_HANDLER("mdp", "dsi0_ctrl", "dsi0_phy",
@@ -1257,8 +1272,6 @@ static int mdss_mdp_video_wait4vsync(struct mdss_mdp_ctl *ctl)
 		rc = 0;
 	}
 	video_vsync_irq_disable(ctl);
-
-	MDSS_XLOG(ctl->num, ctl->vsync_cnt, XLOG_FUNC_EXIT);
 
 	return rc;
 }
@@ -1434,7 +1447,7 @@ exit_dfps:
 			 * to wait before programming the flush bits.
 			 */
 			if (!rc) {
-				rc = mdss_mdp_video_wait4vsync(ctl);
+				rc = mdss_mdp_video_dfps_wait4vsync(ctl);
 				if (rc < 0)
 					pr_err("Error in dfps_wait: %d\n", rc);
 			}
@@ -1481,6 +1494,13 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 		reinit_completion(&ctx->vsync_comp);
 	} else {
 		WARN(1, "commit without wait! ctl=%d", ctl->num);
+#ifdef CONFIG_HUAWEI_DSM
+		#ifdef CONFIG_LCDKIT_DRIVER
+		lcdkit_report_dsm_err(DSM_LCD_MDSS_VIDEO_DISPLAY_ERROR_NO,0,ctl->num,0);
+		#else
+		lcd_report_dsm_err(DSM_LCD_MDSS_VIDEO_DISPLAY_ERROR_NO,ctl->num,0);
+		#endif
+#endif
 	}
 
 	MDSS_XLOG(ctl->num, ctl->underrun_cnt);
@@ -1539,6 +1559,11 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 		WARN(rc, "intf %d panel on error (%d)\n", ctl->intf_num, rc);
 		mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_POST_PANEL_ON, NULL,
 			CTL_INTF_EVENT_FLAG_DEFAULT);
+	/*scheduled the esd delay work*/
+#if defined(CONFIG_HUAWEI_KERNEL_LCD) || defined(CONFIG_LCDKIT_DRIVER)
+		mdss_dsi_status_check_ctl(ctl->mfd,true);
+#endif
+
 	}
 
 	if (mdss_mdp_is_lineptr_supported(ctl))
@@ -1758,9 +1783,8 @@ static void mdss_mdp_handoff_programmable_fetch(struct mdss_mdp_ctl *ctl,
 			MDSS_MDP_REG_INTF_HSYNC_CTL) >> 16;
 		v_total_handoff = mdp_video_read(ctx,
 			MDSS_MDP_REG_INTF_VSYNC_PERIOD_F0)/h_total_handoff;
-		if (h_total_handoff)
-			pinfo->prg_fet = v_total_handoff -
-				((fetch_start_handoff - 1)/h_total_handoff);
+		pinfo->prg_fet = v_total_handoff -
+			((fetch_start_handoff - 1)/h_total_handoff);
 		pr_debug("programmable fetch lines %d start:%d\n",
 			pinfo->prg_fet, fetch_start_handoff);
 		MDSS_XLOG(pinfo->prg_fet, fetch_start_handoff,
@@ -2019,8 +2043,8 @@ void mdss_mdp_switch_to_cmd_mode(struct mdss_mdp_ctl *ctl, int prep)
 		wait_for_completion_interruptible_timeout(&ctx->vsync_comp,
 			  usecs_to_jiffies(VSYNC_TIMEOUT_US));
 	}
-	frame_rate = mdss_panel_get_framerate(&(ctl->panel_data->panel_info),
-			FPS_RESOLUTION_HZ);
+	frame_rate = mdss_panel_get_framerate
+			(&(ctl->panel_data->panel_info));
 	if (!(frame_rate >= 24 && frame_rate <= 240))
 		frame_rate = 24;
 	frame_rate = ((1000/frame_rate) + 1);
@@ -2118,21 +2142,10 @@ static int mdss_mdp_video_early_wake_up(struct mdss_mdp_ctl *ctl)
 	 * lot of latency rendering the input events useless in preventing the
 	 * idle time out.
 	 */
-	if ((ctl->mfd->idle_state == MDSS_FB_IDLE_TIMER_RUNNING) ||
-				(ctl->mfd->idle_state == MDSS_FB_IDLE)) {
-		/*
-		 * Modify the idle time so that an idle fallback can be
-		 * triggered for those cases, where we have no update
-		 * despite of a touch event and idle time is 0.
-		 */
-		if (!ctl->mfd->idle_time) {
-			ctl->mfd->idle_time = 70;
-			schedule_delayed_work(&ctl->mfd->idle_notify_work,
-							msecs_to_jiffies(200));
-		} else {
+	if (ctl->mfd->idle_state == MDSS_FB_IDLE_TIMER_RUNNING) {
+		if (ctl->mfd->idle_time)
 			mod_delayed_work(system_wq, &ctl->mfd->idle_notify_work,
 					 msecs_to_jiffies(ctl->mfd->idle_time));
-		}
 		pr_debug("Delayed idle time\n");
 	} else {
 		pr_debug("Nothing to done for this state (%d)\n",
@@ -2169,7 +2182,6 @@ int mdss_mdp_video_start(struct mdss_mdp_ctl *ctl)
 	ctl->ops.stop_fnc = mdss_mdp_video_stop;
 	ctl->ops.display_fnc = mdss_mdp_video_display;
 	ctl->ops.wait_fnc = mdss_mdp_video_wait4comp;
-	ctl->ops.wait_vsync_fnc = mdss_mdp_video_wait4vsync;
 	ctl->ops.read_line_cnt_fnc = mdss_mdp_video_line_count;
 	ctl->ops.add_vsync_handler = mdss_mdp_video_add_vsync_handler;
 	ctl->ops.remove_vsync_handler = mdss_mdp_video_remove_vsync_handler;

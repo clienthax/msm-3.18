@@ -378,6 +378,11 @@ int invalidate_inode_page(struct page *page)
 		return 0;
 	if (page_mapped(page))
 		return 0;
+#ifdef CONFIG_TASK_PROTECT_LRU
+	if (PageProtect(page))
+		return 0;
+#endif
+
 	return invalidate_complete_page(mapping, page);
 }
 
@@ -580,7 +585,7 @@ unsigned long invalidate_mapping_pages(struct address_space *mapping,
 			 * of interest and try to speed up its reclaim.
 			 */
 			if (!ret)
-				deactivate_file_page(page);
+				deactivate_page(page);
 			count += ret;
 		}
 		pagevec_remove_exceptionals(&pvec);

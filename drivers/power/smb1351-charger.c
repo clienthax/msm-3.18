@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2017 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2016 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -529,7 +529,6 @@ struct smb1351_charger {
 	int			slave_fcc_ma_before_esr;
 	int			workaround_flags;
 
-	struct mutex		parallel_config_lock;
 	int			parallel_pin_polarity_setting;
 	bool			is_slave;
 	bool			use_external_fg;
@@ -1791,9 +1790,6 @@ static int smb1351_parallel_charger_disable_slave(
 	int rc;
 	struct power_supply *parallel_psy = smb1351_get_parallel_slave(chip);
 
-	if (!parallel_psy || !chip->parallel.slave_detected)
-		return 0;
-
 	pr_debug("Disable parallel slave!\n");
 
 	chip->parallel.total_icl_ma = 0;
@@ -2563,12 +2559,10 @@ static int smb1351_parallel_set_property(struct power_supply *psy,
 		}
 		break;
 	case POWER_SUPPLY_PROP_PRESENT:
-		mutex_lock(&chip->parallel_config_lock);
 		rc = smb1351_parallel_set_chg_present(chip, val->intval);
 		if (rc)
 			pr_err("Set charger %spresent failed\n",
 					val->intval ? "" : "un-");
-		mutex_unlock(&chip->parallel_config_lock);
 		break;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
 		if (chip->parallel_charger_present) {
@@ -2888,28 +2882,6 @@ static void smb1351_rerun_apsd_work(struct work_struct *work)
 	smb1351_relax(&chip->smb1351_ws, RERUN_APSD);
 }
 
-static int smb1351_notify_usb_supply_type(struct smb1351_charger *chip,
-					enum power_supply_type type)
-{
-	int rc;
-	union power_supply_propval pval = {0, };
-
-	pval.intval = type;
-	rc = chip->usb_psy->set_property(chip->usb_psy,
-			POWER_SUPPLY_PROP_REAL_TYPE, &pval);
-	if (rc < 0) {
-		if (rc == -EINVAL) {
-			rc = chip->usb_psy->set_property(chip->usb_psy,
-					POWER_SUPPLY_PROP_TYPE, &pval);
-			if (!rc)
-				return 0;
-		}
-		pr_err("notify charger type to usb_psy failed, rc=%d\n", rc);
-	}
-
-	return rc;
-}
-
 static void smb1351_hvdcp_det_work(struct work_struct *work)
 {
 	int rc;
@@ -2929,14 +2901,14 @@ static void smb1351_hvdcp_det_work(struct work_struct *work)
 	is_hvdcp = !!(reg & (HVDCP_SEL_5V | HVDCP_SEL_9V | HVDCP_SEL_12V));
 	if (is_hvdcp) {
 		pr_debug("HVDCP detected; notifying USB PSY\n");
-		smb1351_notify_usb_supply_type(chip,
-				POWER_SUPPLY_TYPE_USB_HVDCP);
+		power_supply_set_supply_type(chip->usb_psy,
+			POWER_SUPPLY_TYPE_USB_HVDCP);
 	}
 end:
 	smb1351_relax(&chip->smb1351_ws, HVDCP_DETECT);
 }
 
-#define HVDCP_NOTIFY_MS 3500
+#define HVDCP_NOTIFY_MS 2500
 static int smb1351_apsd_complete_handler(struct smb1351_charger *chip,
 						u8 status)
 {
@@ -2968,24 +2940,22 @@ static int smb1351_apsd_complete_handler(struct smb1351_charger *chip,
 		 * If defined force hvdcp 2p0 property,
 		 * we force to hvdcp 2p0 in the APSD handler.
 		 */
-		if (type == POWER_SUPPLY_TYPE_USB_DCP) {
-			if (chip->force_hvdcp_2p0) {
-				pr_debug("Force set to HVDCP 2.0 mode\n");
-				smb1351_masked_write(chip, VARIOUS_FUNC_3_REG,
+		if (chip->force_hvdcp_2p0) {
+			pr_debug("Force set to HVDCP 2.0 mode\n");
+			smb1351_masked_write(chip, VARIOUS_FUNC_3_REG,
 						QC_2P1_AUTH_ALGO_BIT, 0);
-				smb1351_masked_write(chip, CMD_HVDCP_REG,
+			smb1351_masked_write(chip, CMD_HVDCP_REG,
 						CMD_FORCE_HVDCP_2P0_BIT,
 						CMD_FORCE_HVDCP_2P0_BIT);
-				type = POWER_SUPPLY_TYPE_USB_HVDCP;
-			} else {
-				pr_debug("schedule hvdcp detection worker\n");
-				smb1351_stay_awake(&chip->smb1351_ws,
-							HVDCP_DETECT);
-				schedule_delayed_work(&chip->hvdcp_det_work,
+			type = POWER_SUPPLY_TYPE_USB_HVDCP;
+		} else if (type == POWER_SUPPLY_TYPE_USB_DCP) {
+			pr_debug("schedule hvdcp detection worker\n");
+			smb1351_stay_awake(&chip->smb1351_ws, HVDCP_DETECT);
+			schedule_delayed_work(&chip->hvdcp_det_work,
 					msecs_to_jiffies(HVDCP_NOTIFY_MS));
-			}
 		}
-		smb1351_notify_usb_supply_type(chip, type);
+
+		power_supply_set_supply_type(chip->usb_psy, type);
 		/*
 		 * SMB is now done sampling the D+/D- lines,
 		 * indicate USB driver
@@ -3037,7 +3007,8 @@ static void smb1351_chg_remove_work(struct work_struct *work)
 			pr_debug("set parallel charger un-present!\n");
 			power_supply_set_present(parallel_psy, false);
 		}
-		smb1351_notify_usb_supply_type(chip, POWER_SUPPLY_TYPE_UNKNOWN);
+		power_supply_set_supply_type(chip->usb_psy,
+						POWER_SUPPLY_TYPE_UNKNOWN);
 		power_supply_set_present(chip->usb_psy,
 						chip->chg_present);
 		pr_debug("Set usb psy dp=r dm=r\n");
@@ -3078,8 +3049,8 @@ static int smb1351_usbin_uv_handler(struct smb1351_charger *chip, u8 status)
 			chip->chg_present = true;
 			pr_debug("updating usb_psy present=%d\n",
 						chip->chg_present);
-			smb1351_notify_usb_supply_type(chip,
-					POWER_SUPPLY_TYPE_USB);
+			power_supply_set_supply_type(chip->usb_psy,
+						POWER_SUPPLY_TYPE_USB);
 			power_supply_set_present(chip->usb_psy,
 						chip->chg_present);
 			/* set parallel slave PRESENT */
@@ -3096,8 +3067,8 @@ static int smb1351_usbin_uv_handler(struct smb1351_charger *chip, u8 status)
 			/* clear parallel slave PRESENT */
 			if (parallel_psy && chip->parallel.slave_detected)
 				power_supply_set_present(parallel_psy, false);
-			smb1351_notify_usb_supply_type(chip,
-					POWER_SUPPLY_TYPE_UNKNOWN);
+			power_supply_set_supply_type(chip->usb_psy,
+						POWER_SUPPLY_TYPE_UNKNOWN);
 			power_supply_set_present(chip->usb_psy,
 						chip->chg_present);
 			pr_debug("updating usb_psy present=%d\n",
@@ -3148,7 +3119,8 @@ static int smb1351_usbin_ov_handler(struct smb1351_charger *chip, u8 status)
 		/* clear parallel slave PRESENT */
 		if (parallel_psy && chip->parallel.slave_detected)
 			power_supply_set_present(parallel_psy, false);
-		smb1351_notify_usb_supply_type(chip, POWER_SUPPLY_TYPE_UNKNOWN);
+		power_supply_set_supply_type(chip->usb_psy,
+						POWER_SUPPLY_TYPE_UNKNOWN);
 		power_supply_set_present(chip->usb_psy, chip->chg_present);
 	} else {
 		chip->usbin_ov = false;
@@ -3669,19 +3641,11 @@ static int smb1351_update_usb_supply_icl(struct smb1351_charger *chip)
 	union power_supply_propval pval = {0, };
 
 	rc = chip->usb_psy->get_property(chip->usb_psy,
-			POWER_SUPPLY_PROP_REAL_TYPE, &pval);
-	if (rc == -EINVAL) {
-		rc = chip->usb_psy->get_property(chip->usb_psy,
-				POWER_SUPPLY_PROP_TYPE, &pval);
-		if (rc < 0) {
-			pr_err("Get USB supply TYPE failed, rc=%d\n", rc);
-			return rc;
-		}
-	} else if (rc < 0) {
-		pr_err("Get USB supply REAL_TYPE failed, rc=%d\n", rc);
+			POWER_SUPPLY_PROP_TYPE, &pval);
+	if (rc) {
+		pr_err("Get USB supply type failed, rc=%d\n", rc);
 		return rc;
 	}
-
 	type = pval.intval;
 	chip->usb_psy_type = type;
 	rc = chip->usb_psy->get_property(chip->usb_psy,
@@ -4618,7 +4582,7 @@ static int smb1351_main_charger_probe(struct i2c_client *client,
 			chip->adc_param.low_temp = chip->batt_cool_decidegc;
 			chip->adc_param.high_temp = chip->batt_warm_decidegc;
 		}
-		chip->adc_param.timer_interval = ADC_MEAS1_INTERVAL_500MS;
+		chip->adc_param.timer_interval = ADC_MEAS2_INTERVAL_1S;
 		chip->adc_param.state_request = ADC_TM_WARM_COOL_THR_ENABLE;
 		chip->adc_param.btm_ctx = chip;
 		chip->adc_param.threshold_notification =
@@ -4694,10 +4658,9 @@ static int smb1351_parallel_slave_probe(struct i2c_client *client,
 				EN_BY_PIN_HIGH_ENABLE : EN_BY_PIN_LOW_ENABLE;
 
 	i2c_set_clientdata(client, chip);
-	mutex_init(&chip->parallel_config_lock);
 
-	chip->parallel_psy.name		= "parallel";
-	chip->parallel_psy.type		= POWER_SUPPLY_TYPE_PARALLEL;
+	chip->parallel_psy.name		= "usb-parallel";
+	chip->parallel_psy.type		= POWER_SUPPLY_TYPE_USB_PARALLEL;
 	chip->parallel_psy.get_property	= smb1351_parallel_get_property;
 	chip->parallel_psy.set_property	= smb1351_parallel_set_property;
 	chip->parallel_psy.properties	= smb1351_parallel_properties;
@@ -4727,7 +4690,6 @@ fail_register_psy:
 	wakeup_source_trash(&chip->smb1351_ws.source);
 	mutex_destroy(&chip->irq_complete);
 	mutex_destroy(&chip->fcc_lock);
-	mutex_destroy(&chip->parallel_config_lock);
 	return rc;
 }
 
@@ -4750,10 +4712,8 @@ static int smb1351_charger_remove(struct i2c_client *client)
 	wakeup_source_trash(&chip->smb1351_ws.source);
 	mutex_destroy(&chip->irq_complete);
 	mutex_destroy(&chip->fcc_lock);
-	if (is_parallel_slave(client)) {
-		mutex_destroy(&chip->parallel_config_lock);
+	if (is_parallel_slave(client))
 		mutex_destroy(&chip->parallel.lock);
-	}
 	debugfs_remove_recursive(chip->debug_root);
 	return 0;
 }

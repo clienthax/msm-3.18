@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2015,2017 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,6 +29,9 @@
 
 #include <soc/qcom/smem.h>
 
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+#include <soc/qcom/subsystem_restart.h>
+#endif
 
 #include "smem_private.h"
 
@@ -367,7 +370,7 @@ static void *__smem_get_entry_secure(unsigned id,
 	uint32_t a_hdr_size;
 	int rc;
 
-	SMEM_DBG("%s(%u, %u, %u, %d, %d)\n", __func__, id, to_proc,
+	SMEM_DBG("%s(%u, %u, %u, %u, %d, %d)\n", __func__, id, *size, to_proc,
 					flags, skip_init_check, use_rspinlock);
 
 	if (!skip_init_check && !smem_initialized_check())
@@ -788,7 +791,7 @@ EXPORT_SYMBOL(smem_alloc);
 void *smem_get_entry(unsigned id, unsigned *size, unsigned to_proc,
 								unsigned flags)
 {
-	SMEM_DBG("%s(%u, %u, %u)\n", __func__, id, to_proc, flags);
+	SMEM_DBG("%s(%u, %u, %u, %u)\n", __func__, id, *size, to_proc, flags);
 
 	/*
 	 * Handle the circular dependecy between SMEM and software implemented
@@ -1022,6 +1025,10 @@ static int restart_notifier_cb(struct notifier_block *this,
 		if (!(smem_ramdump_dev && (notifdata->enable_mini_ramdumps
 						|| notifdata->enable_ramdump)))
 			break;
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+		if (!enable_ramdumps)
+			break;
+#endif
 		SMEM_DBG("%s: saving ramdump\n", __func__);
 		/*
 		 * XPU protection does not currently allow the

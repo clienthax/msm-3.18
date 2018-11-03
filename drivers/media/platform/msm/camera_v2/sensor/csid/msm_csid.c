@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -61,8 +61,7 @@
 #define TRUE   1
 #define FALSE  0
 
-#define MAX_LANE_COUNT 4
-#define CSID_TIMEOUT msecs_to_jiffies(100)
+#define CSID_TIMEOUT msecs_to_jiffies(200)
 
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
@@ -73,6 +72,10 @@ static struct camera_vreg_t csid_vreg_info[] = {
 
 #ifdef CONFIG_COMPAT
 static struct v4l2_file_operations msm_csid_v4l2_subdev_fops;
+#endif
+
+#ifdef CONFIG_HUAWEI_KERNEL
+extern bool huawei_cam_is_factory_mode(void);
 #endif
 
 static int msm_csid_cid_lut(
@@ -230,34 +233,16 @@ static void msm_csid_set_sof_freeze_debug_reg(
 static int msm_csid_reset(struct csid_device *csid_dev)
 {
 	int32_t rc = 0;
-	uint32_t irq = 0, irq_bitshift;
-
-	irq_bitshift = csid_dev->ctrl_reg->csid_reg.csid_rst_done_irq_bitshift;
 	msm_camera_io_w(csid_dev->ctrl_reg->csid_reg.csid_rst_stb_all,
 		csid_dev->base +
 		csid_dev->ctrl_reg->csid_reg.csid_rst_cmd_addr);
 	rc = wait_for_completion_timeout(&csid_dev->reset_complete,
 		CSID_TIMEOUT);
-	if (rc < 0) {
+	if (rc <= 0) {
 		pr_err("wait_for_completion in msm_csid_reset fail rc = %d\n",
 			rc);
-	} else if (rc == 0) {
-		irq = msm_camera_io_r(csid_dev->base +
-			csid_dev->ctrl_reg->csid_reg.csid_irq_status_addr);
-		pr_err_ratelimited("%s CSID%d_IRQ_STATUS_ADDR = 0x%x\n",
-			__func__, csid_dev->pdev->id, irq);
-		if (irq & (0x1 << irq_bitshift)) {
-			rc = 1;
-			CDBG("%s succeeded", __func__);
-		} else {
-			rc = 0;
-			pr_err("%s reset csid_irq_status failed = 0x%x\n",
-				__func__, irq);
-		}
 		if (rc == 0)
 			rc = -ETIMEDOUT;
-	} else {
-		CDBG("%s succeeded", __func__);
 	}
 	return rc;
 }
@@ -306,12 +291,6 @@ static int msm_csid_config(struct csid_device *csid_dev,
 		csid_params->lane_assign);
 	CDBG("%s csid_params phy_sel = %d\n", __func__,
 		csid_params->phy_sel);
-	if ((csid_params->lane_cnt == 0) ||
-		(csid_params->lane_cnt > MAX_LANE_COUNT)) {
-		pr_err("%s:%d invalid lane count = %d\n",
-			__func__, __LINE__, csid_params->lane_cnt);
-		return -EINVAL;
-	}
 
 	csid_dev->csid_lane_cnt = csid_params->lane_cnt;
 	rc = msm_csid_reset(csid_dev);
@@ -323,7 +302,7 @@ static int msm_csid_config(struct csid_device *csid_dev,
 	if (!msm_csid_find_max_clk_rate(csid_dev))
 		pr_err("msm_csid_find_max_clk_rate failed\n");
 
-	clk_rate = ((int)csid_params->csi_clk > 0) ?
+	clk_rate = (csid_params->csi_clk > 0) ?
 				(csid_params->csi_clk) : csid_dev->csid_max_clk;
 
 	clk_rate = msm_camera_clk_set_rate(&csid_dev->pdev->dev,
@@ -494,8 +473,28 @@ static irqreturn_t msm_csid_irq(int irq_num, void *data)
 
 	irq = msm_camera_io_r(csid_dev->base +
 		csid_dev->ctrl_reg->csid_reg.csid_irq_status_addr);
+#ifdef CONFIG_HUAWEI_KERNEL
+	if(huawei_cam_is_factory_mode())
+	{
+		if(csid_dev->pdev)
+		{
+			pr_err("%s CSID%d_IRQ_STATUS_ADDR = 0x%x\n",
+				__func__, csid_dev->pdev->id, irq);
+		}
+		else
+		{
+			pr_err("%s:%d csid_dev->pdev NULL\n", __func__, __LINE__);
+		}
+	}
+	else
+	{
 	pr_err_ratelimited("%s CSID%d_IRQ_STATUS_ADDR = 0x%x\n",
 		 __func__, csid_dev->pdev->id, irq);
+	}
+#else
+	pr_err_ratelimited("%s CSID%d_IRQ_STATUS_ADDR = 0x%x\n",
+		 __func__, csid_dev->pdev->id, irq);
+#endif
 	if (irq & (0x1 <<
 		csid_dev->ctrl_reg->csid_reg.csid_rst_done_irq_bitshift))
 		complete(&csid_dev->reset_complete);
@@ -510,7 +509,18 @@ static int msm_csid_irq_routine(struct v4l2_subdev *sd, u32 status,
 {
 	struct csid_device *csid_dev = v4l2_get_subdevdata(sd);
 	irqreturn_t ret;
+#ifdef CONFIG_HUAWEI_KERNEL
+	if(huawei_cam_is_factory_mode())
+	{
+		pr_err("%s E\n", __func__);
+	}
+	else
+	{
+		CDBG("%s E\n", __func__);
+	}
+#else
 	CDBG("%s E\n", __func__);
+#endif
 	ret = msm_csid_irq(csid_dev->irq->start, csid_dev);
 	*handled = TRUE;
 	return 0;
@@ -690,6 +700,23 @@ static int msm_csid_release(struct csid_device *csid_dev)
 		CAM_AHB_SUSPEND_VOTE) < 0)
 		pr_err("%s: failed to remove vote from AHB\n", __func__);
 	return 0;
+}
+
+/* optimize camera print mipi packet and frame count log*/
+static uint32_t csid_read_mipi_count(struct csid_device *csid_dev)
+{
+	uint32_t value = 0;
+	if(!csid_dev || !csid_dev->base)
+	{
+		pr_err("%s:%d\n",__func__,__LINE__);
+		return 0;
+	}
+
+	value = msm_camera_io_r(csid_dev->base + csid_dev->ctrl_reg->csid_reg.csid_stats_total_pkts_rcvd_addr);
+
+	//pr_info("%s: csid%d total mipi packet = %u\n",__func__,csid_dev->pdev->id, value);
+
+	return value;
 }
 
 static int32_t msm_csid_cmd(struct csid_device *csid_dev, void __user *arg)
@@ -1127,6 +1154,9 @@ static int csid_probe(struct platform_device *pdev)
 		rc = -EBUSY;
 		goto csid_invalid_irq;
 	}
+
+	/* optimize camera print mipi packet and frame count log*/
+	new_csid_dev->csid_read_mipi_pkg = csid_read_mipi_count;
 
 	if (of_device_is_compatible(new_csid_dev->pdev->dev.of_node,
 		"qcom,csid-v2.0")) {

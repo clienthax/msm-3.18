@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -34,7 +34,9 @@
 #include "msm_vidc_debug.h"
 #include "venus_hfi.h"
 #include "vidc_hfi_io.h"
-
+#ifdef CONFIG_HUAWEI_DSM
+#include "msm_camera_vid_dsm.h"
+#endif
 #define FIRMWARE_SIZE			0X00A00000
 #define REG_ADDR_OFFSET_BITMASK	0x000FFFFF
 #define QDSS_IOVA_START 0x80001000
@@ -105,11 +107,7 @@ static int __tzbsp_set_video_state(enum tzbsp_video_state state);
  */
 static inline void __strict_check(struct venus_hfi_device *device)
 {
-	if (!mutex_is_locked(&device->lock)) {
-		dprintk(VIDC_WARN,
-			"device->lock mutex is not locked\n");
-		WARN_ON(VIDC_DBG_WARN_ENABLE);
-	}
+	WARN_ON(!mutex_is_locked(&device->lock));
 }
 
 static inline void __set_state(struct venus_hfi_device *device,
@@ -271,7 +269,7 @@ static int __acquire_regulator(struct regulator_info *rinfo)
 	if (!regulator_is_enabled(rinfo->regulator)) {
 		dprintk(VIDC_WARN, "Regulator is not enabled %s\n",
 			rinfo->name);
-		WARN_ON(VIDC_DBG_WARN_ENABLE);
+		WARN_ON(1);
 	}
 
 	return rc;
@@ -621,7 +619,7 @@ static void __write_register(struct venus_hfi_device *device,
 	if (!device->power_enabled) {
 		dprintk(VIDC_WARN,
 			"HFI Write register failed : Power is OFF\n");
-		WARN_ON(VIDC_DBG_WARN_ENABLE);
+		WARN_ON(1);
 		return;
 	}
 
@@ -647,7 +645,7 @@ static int __read_register(struct venus_hfi_device *device, u32 reg)
 	if (!device->power_enabled) {
 		dprintk(VIDC_WARN,
 			"HFI Read register failed : Power is OFF\n");
-		WARN_ON(VIDC_DBG_WARN_ENABLE);
+		WARN_ON(1);
 		return -EINVAL;
 	}
 
@@ -936,6 +934,8 @@ static int __core_set_resource(struct venus_hfi_device *device,
 err_create_pkt:
 	return rc;
 }
+
+static DECLARE_COMPLETION(release_resources_done);
 
 static int __alloc_imem(struct venus_hfi_device *device, unsigned long size)
 {
@@ -1348,7 +1348,7 @@ static int __halt_axi(struct venus_hfi_device *device)
 	if (!device->power_enabled) {
 		dprintk(VIDC_WARN,
 			"Clocks are OFF, skipping AXI HALT\n");
-		WARN_ON(VIDC_DBG_WARN_ENABLE);
+		WARN_ON(1);
 		return -EINVAL;
 	}
 
@@ -2155,6 +2155,8 @@ static int venus_hfi_core_init(void *device)
 
 	dev = device;
 	mutex_lock(&dev->lock);
+
+	init_completion(&release_resources_done);
 
 	rc = __load_fw(dev);
 	if (rc) {
@@ -3457,6 +3459,7 @@ static int __response_handler(struct venus_hfi_device *device)
 			break;
 		case HAL_SYS_RELEASE_RESOURCE_DONE:
 			dprintk(VIDC_DBG, "Received SYS_RELEASE_RESOURCE\n");
+			complete(&release_resources_done);
 			break;
 		case HAL_SYS_INIT_DONE:
 			dprintk(VIDC_DBG, "Received SYS_INIT_DONE\n");
@@ -3531,11 +3534,7 @@ static int __response_handler(struct venus_hfi_device *device)
 		if (session_id) {
 			struct hal_session *session = NULL;
 
-			if (upper_32_bits((uintptr_t)*session_id) != 0) {
-				dprintk(VIDC_WARN,
-					"Upper 32 bits of session_id != 0\n");
-				WARN_ON(VIDC_DBG_WARN_ENABLE);
-			}
+			WARN_ON(upper_32_bits((uintptr_t)*session_id) != 0);
 			session = __get_session(device,
 					(u32)(uintptr_t)*session_id);
 			if (!session) {
@@ -4075,7 +4074,7 @@ static int __disable_regulator(struct regulator_info *rinfo)
 disable_regulator_failed:
 
 	/* Bring attention to this issue */
-	WARN_ON(VIDC_DBG_WARN_ENABLE);
+	WARN_ON(1);
 	return rc;
 }
 
@@ -4385,6 +4384,9 @@ fail_protect_mem:
 		subsystem_put(device->resources.fw.cookie);
 	device->resources.fw.cookie = NULL;
 fail_load_fw:
+#ifdef CONFIG_HUAWEI_DSM
+	camera_vid_report_dsm_err_vidc(DSM_CAMERA_VIDC_LOAD_FW_FAIL, rc, NULL);
+#endif
 	__venus_power_off(device, true);
 fail_venus_power_on:
 fail_init_pkt:

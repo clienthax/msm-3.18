@@ -1,0 +1,18 @@
+--- ../msm-3.18/arch/arm/boot/dts/qcom/skeleton.dtsi	2018-11-03 20:45:54.522097228 +0000
++++ ./arch/arm/boot/dts/qcom/skeleton.dtsi	1970-01-01 01:00:00.000000000 +0100
+@@ -1,15 +0,0 @@
+-/*
+- * Skeleton device tree; the bare minimum needed to boot; just include and
+- * add a compatible value.  The bootloader will typically populate the memory
+- * node.
+- */
+-
+-/ {
+-	#address-cells = <1>;
+-	#size-cells = <1>;
+-	cpus { };
+-	soc { };
+-	chosen { };
+-	aliases { };
+-	memory { device_type = "memory"; reg = <0 0>; };
+-};

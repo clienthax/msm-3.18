@@ -18,8 +18,10 @@
 #include <linux/buffer_head.h> /* for inode_has_buffers */
 #include <linux/ratelimit.h>
 #include <linux/list_lru.h>
-#include <trace/events/writeback.h>
 #include "internal.h"
+#ifdef CONFIG_TASK_PROTECT_LRU
+#include <linux/protect_lru.h>
+#endif
 
 /*
  * Inode locking rules:
@@ -31,7 +33,7 @@
  * inode_sb_list_lock protects:
  *   sb->s_inodes, inode->i_sb_list
  * bdi->wb.list_lock protects:
- *   bdi->wb.b_{dirty,io,more_io,dirty_time}, inode->i_wb_list
+ *   bdi->wb.b_{dirty,io,more_io}, inode->i_wb_list
  * inode_hash_lock protects:
  *   inode_hashtable, inode->i_hash
  *
@@ -129,6 +131,9 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	static const struct file_operations empty_fops;
 	struct address_space *const mapping = &inode->i_data;
 
+#ifdef CONFIG_TASK_PROTECT_LRU
+	inode->i_protect = 0;
+#endif
 	inode->i_sb = sb;
 	inode->i_blkbits = sb->s_blocksize_bits;
 	inode->i_flags = 0;
@@ -406,6 +411,10 @@ static void inode_lru_list_add(struct inode *inode)
 {
 	if (list_lru_add(&inode->i_sb->s_inode_lru, &inode->i_lru))
 		this_cpu_inc(nr_unused);
+#ifdef CONFIG_TASK_PROTECT_LRU
+	else if (protect_lru_enable && inode->i_protect != 0)
+		list_lru_move(&inode->i_sb->s_inode_lru, &inode->i_lru);
+#endif
 }
 
 /*
@@ -415,8 +424,7 @@ static void inode_lru_list_add(struct inode *inode)
  */
 void inode_add_lru(struct inode *inode)
 {
-	if (!(inode->i_state & (I_DIRTY_ALL | I_SYNC |
-				I_FREEING | I_WILL_FREE)) &&
+	if (!(inode->i_state & (I_DIRTY | I_SYNC | I_FREEING | I_WILL_FREE)) &&
 	    !atomic_read(&inode->i_count) && inode->i_sb->s_flags & MS_ACTIVE)
 		inode_lru_list_add(inode);
 }
@@ -647,7 +655,7 @@ int invalidate_inodes(struct super_block *sb, bool kill_dirty)
 			spin_unlock(&inode->i_lock);
 			continue;
 		}
-		if (inode->i_state & I_DIRTY_ALL && !kill_dirty) {
+		if (inode->i_state & I_DIRTY && !kill_dirty) {
 			spin_unlock(&inode->i_lock);
 			busy = 1;
 			continue;
@@ -1432,20 +1440,11 @@ static void iput_final(struct inode *inode)
  */
 void iput(struct inode *inode)
 {
-	if (!inode)
-		return;
-	BUG_ON(inode->i_state & I_CLEAR);
-retry:
-	if (atomic_dec_and_lock(&inode->i_count, &inode->i_lock)) {
-		if (inode->i_nlink && (inode->i_state & I_DIRTY_TIME)) {
-			atomic_inc(&inode->i_count);
-			inode->i_state &= ~I_DIRTY_TIME;
-			spin_unlock(&inode->i_lock);
-			trace_writeback_lazytime_iput(inode);
-			mark_inode_dirty_sync(inode);
-			goto retry;
-		}
-		iput_final(inode);
+	if (inode) {
+		BUG_ON(inode->i_state & I_CLEAR);
+
+		if (atomic_dec_and_lock(&inode->i_count, &inode->i_lock))
+			iput_final(inode);
 	}
 }
 EXPORT_SYMBOL(iput);
@@ -1504,9 +1503,14 @@ static int relatime_need_update(struct vfsmount *mnt, struct inode *inode,
 	return 0;
 }
 
-int generic_update_time(struct inode *inode, struct timespec *time, int flags)
+/*
+ * This does the actual work of updating an inodes time or version.  Must have
+ * had called mnt_want_write() before calling this.
+ */
+static int update_time(struct inode *inode, struct timespec *time, int flags)
 {
-	int iflags = I_DIRTY_TIME;
+	if (inode->i_op->update_time)
+		return inode->i_op->update_time(inode, time, flags);
 
 	if (flags & S_ATIME)
 		inode->i_atime = *time;
@@ -1516,26 +1520,8 @@ int generic_update_time(struct inode *inode, struct timespec *time, int flags)
 		inode->i_ctime = *time;
 	if (flags & S_MTIME)
 		inode->i_mtime = *time;
-
-	if (!(inode->i_sb->s_flags & MS_LAZYTIME) || (flags & S_VERSION))
-		iflags |= I_DIRTY_SYNC;
-	__mark_inode_dirty(inode, iflags);
+	mark_inode_dirty_sync(inode);
 	return 0;
-}
-EXPORT_SYMBOL(generic_update_time);
-
-/*
- * This does the actual work of updating an inodes time or version.  Must have
- * had called mnt_want_write() before calling this.
- */
-static int update_time(struct inode *inode, struct timespec *time, int flags)
-{
-	int (*update_time)(struct inode *, struct timespec *, int);
-
-	update_time = inode->i_op->update_time ? inode->i_op->update_time :
-		generic_update_time;
-
-	return update_time(inode, time, flags);
 }
 
 /**
@@ -1622,7 +1608,7 @@ int should_remove_suid(struct dentry *dentry)
 }
 EXPORT_SYMBOL(should_remove_suid);
 
-static int __remove_suid(struct vfsmount *mnt, struct dentry *dentry, int kill)
+static int __remove_suid(struct dentry *dentry, int kill)
 {
 	struct iattr newattrs;
 
@@ -1631,7 +1617,7 @@ static int __remove_suid(struct vfsmount *mnt, struct dentry *dentry, int kill)
 	 * Note we call this on write, so notify_change will not
 	 * encounter any conflicting delegations:
 	 */
-	return notify_change2(mnt, dentry, &newattrs, NULL);
+	return notify_change(dentry, &newattrs, NULL);
 }
 
 int file_remove_suid(struct file *file)
@@ -1654,7 +1640,7 @@ int file_remove_suid(struct file *file)
 	if (killpriv)
 		error = security_inode_killpriv(dentry);
 	if (!error && killsuid)
-		error = __remove_suid(file->f_path.mnt, dentry, killsuid);
+		error = __remove_suid(dentry, killsuid);
 	if (!error)
 		inode_has_no_xattr(inode);
 
@@ -1845,14 +1831,8 @@ void inode_init_owner(struct inode *inode, const struct inode *dir,
 	inode->i_uid = current_fsuid();
 	if (dir && dir->i_mode & S_ISGID) {
 		inode->i_gid = dir->i_gid;
-
-		/* Directories are special, and always inherit S_ISGID */
 		if (S_ISDIR(mode))
 			mode |= S_ISGID;
-		else if ((mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP) &&
-			 !in_group_p(inode->i_gid) &&
-			 !capable_wrt_inode_uidgid(dir, CAP_FSETID))
-			mode &= ~S_ISGID;
 	} else
 		inode->i_gid = current_fsgid();
 	inode->i_mode = mode;

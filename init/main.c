@@ -78,6 +78,9 @@
 #include <linux/context_tracking.h>
 #include <linux/random.h>
 #include <linux/list.h>
+#include <chipset_common/bfmr/bfm/chipsets/bfm_chipsets.h>
+#include <chipset_common/bfmr/bfm/chipsets/qcom/bfm_qcom.h>
+
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -94,6 +97,9 @@ static int kernel_init(void *);
 extern void init_IRQ(void);
 extern void fork_init(unsigned long);
 extern void radix_tree_init(void);
+#ifndef CONFIG_DEBUG_RODATA
+static inline void mark_rodata_ro(void) { }
+#endif
 
 /*
  * Debug helper: via this flag we know that we are in 'early bootup code'
@@ -233,8 +239,7 @@ static int __init loglevel(char *str)
 early_param("loglevel", loglevel);
 
 /* Change NUL term back to "=", to make "param" the whole string. */
-static int __init repair_env_string(char *param, char *val,
-				    const char *unused, void *arg)
+static int __init repair_env_string(char *param, char *val, const char *unused)
 {
 	if (val) {
 		/* param=val or param="val"? */
@@ -251,15 +256,14 @@ static int __init repair_env_string(char *param, char *val,
 }
 
 /* Anything after -- gets handed straight to init. */
-static int __init set_init_arg(char *param, char *val,
-			       const char *unused, void *arg)
+static int __init set_init_arg(char *param, char *val, const char *unused)
 {
 	unsigned int i;
 
 	if (panic_later)
 		return 0;
 
-	repair_env_string(param, val, unused, NULL);
+	repair_env_string(param, val, unused);
 
 	for (i = 0; argv_init[i]; i++) {
 		if (i == MAX_INIT_ARGS) {
@@ -276,10 +280,9 @@ static int __init set_init_arg(char *param, char *val,
  * Unknown boot options get handed to init, unless they look like
  * unused parameters (modprobe will find them in /proc/cmdline).
  */
-static int __init unknown_bootoption(char *param, char *val,
-				     const char *unused, void *arg)
+static int __init unknown_bootoption(char *param, char *val, const char *unused)
 {
-	repair_env_string(param, val, unused, NULL);
+	repair_env_string(param, val, unused);
 
 	/* Handle obsolete-style parameters */
 	if (obsolete_checksetup(param))
@@ -420,8 +423,7 @@ static noinline void __init_refok rest_init(void)
 }
 
 /* Check for early params. */
-static int __init do_early_param(char *param, char *val,
-				 const char *unused, void *arg)
+static int __init do_early_param(char *param, char *val, const char *unused)
 {
 	const struct obs_kernel_param *p;
 
@@ -440,8 +442,7 @@ static int __init do_early_param(char *param, char *val,
 
 void __init parse_early_options(char *cmdline)
 {
-	parse_args("early options", cmdline, NULL, 0, 0, 0, NULL,
-		   do_early_param);
+	parse_args("early options", cmdline, NULL, 0, 0, 0, do_early_param);
 }
 
 /* Arch code calls this early on, or if not, just before other parsing. */
@@ -545,10 +546,10 @@ asmlinkage __visible void __init start_kernel(void)
 	after_dashes = parse_args("Booting kernel",
 				  static_command_line, __start___param,
 				  __stop___param - __start___param,
-				  -1, -1, NULL, &unknown_bootoption);
+				  -1, -1, &unknown_bootoption);
 	if (!IS_ERR_OR_NULL(after_dashes))
 		parse_args("Setting init args", after_dashes, NULL, 0, -1, -1,
-			   NULL, set_init_arg);
+			   set_init_arg);
 
 	jump_label_init();
 
@@ -562,6 +563,8 @@ asmlinkage __visible void __init start_kernel(void)
 	sort_main_extable();
 	trap_init();
 	mm_init();
+
+	hwboot_fail_init_struct();
 
 	/*
 	 * Set up the scheduler prior starting any interrupts (such as the
@@ -579,10 +582,6 @@ asmlinkage __visible void __init start_kernel(void)
 		local_irq_disable();
 	idr_init_cache();
 	rcu_init();
-
-	/* trace_printk() and trace points may be used after this */
-	trace_init();
-
 	context_tracking_init();
 	radix_tree_init();
 	/* init some links before init_ISA_irqs() */
@@ -847,17 +846,100 @@ static char *initcall_level_names[] __initdata = {
 	"device",
 	"late",
 };
-
+/*AR0005AFIC yuanshuai 20160919 begin */
+#ifdef CONFIG_HUAWEI_BOOT_TIME
+extern void log_boot(char *str);
+#endif
+/*AR0005AFIC yuanshuai 20160919 end */
 static void __init do_initcall_level(int level)
 {
 	initcall_t *fn;
+
+	switch(level)
+	{
+		case 0:
+			bfm_set_boot_stage(KERNEL_EARLY_INITCALL);
+			pr_info("Boot_monitor set stage:KERNEL_EARLY_INITCALL\n");
+			/*AR0005AFIC yuanshuai 20160919 begin */
+			#ifdef CONFIG_HUAWEI_BOOT_TIME
+			log_boot("KERNEL_EARLY_INITCALL");
+			#endif
+			/*AR0005AFIC yuanshuai 20160919 end */
+			break;
+		case 1:
+			bfm_set_boot_stage(KERNEL_CORE_INITCALL_SYNC);
+			pr_info("Boot_monitor set stage:KERNEL_CORE_INITCALL_SYNC\n");
+			/*AR0005AFIC yuanshuai 20160919 begin */
+			#ifdef CONFIG_HUAWEI_BOOT_TIME
+			log_boot("KERNEL_CORE_INITCALL_SYNC");
+			#endif
+			/*AR0005AFIC yuanshuai 20160919 end */
+			break;
+		case 2:
+			bfm_set_boot_stage(KERNEL_POSTCORE_INITCALL);
+			pr_info("Boot_monitor set stage:KERNEL_POSTCORE_INITCALL\n");
+			/*AR0005AFIC yuanshuai 20160919 begin */
+			#ifdef CONFIG_HUAWEI_BOOT_TIME
+			log_boot("KERNEL_POSTCORE_INITCALL");
+			#endif
+			/*AR0005AFIC yuanshuai 20160919 end */
+			break;
+		case 3:
+			bfm_set_boot_stage(KERNEL_ARCH_INITCALL);;
+			pr_info("Boot_monitor set stage:KERNEL_ARCH_INITCALL\n");
+			/*AR0005AFIC yuanshuai 20160919 begin */
+			#ifdef CONFIG_HUAWEI_BOOT_TIME
+			log_boot("KERNEL_ARCH_INITCALL");
+			#endif
+			/*AR0005AFIC yuanshuai 20160919 end */
+			break;
+		case 4:
+			bfm_set_boot_stage(KERNEL_SUBSYS_INITCALL);
+			pr_info("Boot_monitor set stage:KERNEL_SUBSYS_INITCALL\n");
+			/*AR0005AFIC yuanshuai 20160919 begin */
+			#ifdef CONFIG_HUAWEI_BOOT_TIME
+			log_boot("KERNEL_SUBSYS_INITCALL");
+			#endif
+			/*AR0005AFIC yuanshuai 20160919 end */
+			break;
+		case 5:
+			bfm_set_boot_stage(KERNEL_FS_INITCALL);
+			pr_info("Boot_monitor set stage:KERNEL_FS_INITCALL\n");
+			/*AR0005AFIC yuanshuai 20160919 begin */
+			#ifdef CONFIG_HUAWEI_BOOT_TIME
+			log_boot("KERNEL_FS_INITCALL");
+			#endif
+			/*AR0005AFIC yuanshuai 20160919 end */
+			break;
+		case 6:
+			bfm_set_boot_stage(KERNEL_DEVICE_INITCALL);
+			pr_info("Boot_monitor set stage:KERNEL_DEVICE_INITCALL\n");
+			/*AR0005AFIC yuanshuai 20160919 begin */
+			#ifdef CONFIG_HUAWEI_BOOT_TIME
+			log_boot("KERNEL_DEVICE_INITCALL");
+			#endif
+			/*AR0005AFIC yuanshuai 20160919 end */
+			break;
+		case 7:
+			bfm_set_boot_stage(KERNEL_LATE_INITCALL);
+			pr_info("Boot_monitor set stage:KERNEL_LATE_INITCALL\n");
+			/*AR0005AFIC yuanshuai 20160919 begin */
+			#ifdef CONFIG_HUAWEI_BOOT_TIME
+			log_boot("KERNEL_LATE_INITCALL");
+			#endif
+			/*AR0005AFIC yuanshuai 20160919 end */
+			break;
+		default:
+			pr_info("level is out of range ,no need set boot stage.\n");
+			break;
+	}
 
 	strcpy(initcall_command_line, saved_command_line);
 	parse_args(initcall_level_names[level],
 		   initcall_command_line, __start___param,
 		   __stop___param - __start___param,
 		   level, level,
-		   NULL, &repair_env_string);
+		   &repair_env_string);
 
 	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
 		do_one_initcall(*fn);
@@ -933,29 +1015,6 @@ static int try_to_run_init_process(const char *init_filename)
 }
 
 static noinline void __init kernel_init_freeable(void);
-
-#ifdef CONFIG_DEBUG_RODATA
-static bool rodata_enabled = true;
-static int __init set_debug_rodata(char *str)
-{
-	return strtobool(str, &rodata_enabled);
-}
-__setup("rodata=", set_debug_rodata);
-
-static void mark_readonly(void)
-{
-	if (rodata_enabled)
-		mark_rodata_ro();
-	else
-		pr_info("Kernel memory protection disabled.\n");
-}
-#else
-static inline void mark_readonly(void)
-{
-	pr_warn("This architecture does not have kernel memory protection.\n");
-}
-#endif
-
 static int __ref kernel_init(void *unused)
 {
 	int ret;
@@ -964,12 +1023,16 @@ static int __ref kernel_init(void *unused)
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
 	free_initmem();
-	mark_readonly();
+	mark_rodata_ro();
 	system_state = SYSTEM_RUNNING;
 	numa_default_policy();
 
 	flush_delayed_fput();
-
+	/*AR0005AFIC yuanshuai 20160919 begin */
+	#ifdef CONFIG_HUAWEI_BOOT_TIME
+    log_boot("Kernel_init_done");
+	#endif
+	/*AR0005AFIC yuanshuai 20160919 end */
 	if (ramdisk_execute_command) {
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)

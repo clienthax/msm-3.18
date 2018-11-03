@@ -18,6 +18,10 @@
 
 #include "power.h"
 
+#ifdef CONFIG_HUAWEI_SLEEPLOG
+#include <linux/proc_fs.h>
+#endif
+
 DEFINE_MUTEX(pm_mutex);
 
 #ifdef CONFIG_PM_SLEEP
@@ -38,18 +42,11 @@ int unregister_pm_notifier(struct notifier_block *nb)
 }
 EXPORT_SYMBOL_GPL(unregister_pm_notifier);
 
-int __pm_notifier_call_chain(unsigned long val, int nr_to_call, int *nr_calls)
-{
-	int ret;
-
-	ret = __blocking_notifier_call_chain(&pm_chain_head, val, NULL,
-						nr_to_call, nr_calls);
-
-	return notifier_to_errno(ret);
-}
 int pm_notifier_call_chain(unsigned long val)
 {
-	return __pm_notifier_call_chain(val, -1, NULL);
+	int ret = blocking_notifier_call_chain(&pm_chain_head, val, NULL);
+
+	return notifier_to_errno(ret);
 }
 
 /* If set, devices may be suspended and resumed asynchronously. */
@@ -241,6 +238,18 @@ late_initcall(pm_debugfs_init);
 #endif /* CONFIG_DEBUG_FS */
 
 #endif /* CONFIG_PM_SLEEP */
+
+#ifdef CONFIG_HUAWEI_SLEEPLOG
+static int __init pm_proc_init(void)
+{
+    proc_create("suspend_stats", S_IRUGO,
+        (struct proc_dir_entry *)NULL, &suspend_stats_operations);
+    return 0;
+}
+/*lint -e528 -esym(750,*)*/
+late_initcall(pm_proc_init);
+/*lint -e528 +esym(750,*)*/
+#endif
 
 #ifdef CONFIG_PM_SLEEP_DEBUG
 /*
@@ -633,11 +642,20 @@ static int __init pm_start_workqueue(void)
 	return pm_wq ? 0 : -ENOMEM;
 }
 
+extern struct completion suspend_sys_sync_comp;
+extern struct workqueue_struct *suspend_sys_sync_work_queue;
 static int __init pm_init(void)
 {
 	int error = pm_start_workqueue();
 	if (error)
 		return error;
+	init_completion(&suspend_sys_sync_comp);
+	suspend_sys_sync_work_queue =
+		create_singlethread_workqueue("suspend_sys_sync");
+	if (suspend_sys_sync_work_queue == NULL) {
+		error = -ENOMEM;
+		return error;
+	}
 	hibernate_image_size_init();
 	hibernate_reserved_size_init();
 	power_kobj = kobject_create_and_add("power", NULL);

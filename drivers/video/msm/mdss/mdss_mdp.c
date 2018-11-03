@@ -1,7 +1,7 @@
 /*
  * MDSS MDP Interface (used by framebuffer core)
  *
- * Copyright (c) 2007-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2007-2016, The Linux Foundation. All rights reserved.
  * Copyright (C) 2007 Google Incorporated
  *
  * This software is licensed under the terms of the GNU General Public
@@ -57,7 +57,11 @@
 #include "mdss_smmu.h"
 
 #include "mdss_mdp_trace.h"
-
+#ifdef CONFIG_LCDKIT_DRIVER
+#include <linux/lcdkit_dsm.h>
+#else
+#include <linux/hw_lcd_common.h>
+#endif
 #define AXI_HALT_TIMEOUT_US	0x4000
 #define AUTOSUSPEND_TIMEOUT_MS	200
 #define DEFAULT_MDP_PIPE_WIDTH	2048
@@ -782,7 +786,7 @@ void mdss_mdp_irq_clear(struct mdss_data_type *mdata,
 
 int mdss_mdp_irq_enable(u32 intr_type, u32 intf_num)
 {
-	int irq_idx = 0;
+	int irq_idx, idx;
 	unsigned long irq_flags;
 	int ret = 0;
 	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
@@ -801,7 +805,7 @@ int mdss_mdp_irq_enable(u32 intr_type, u32 intf_num)
 	spin_lock_irqsave(&mdp_lock, irq_flags);
 	if (mdata->mdp_irq_mask[irq.reg_idx] & irq.irq_mask) {
 		pr_warn("MDSS MDP IRQ-0x%x is already set, mask=%x\n",
-				irq.irq_mask, mdata->mdp_irq_mask[irq.reg_idx]);
+				irq.irq_mask, mdata->mdp_irq_mask[idx]);
 		ret = -EBUSY;
 	} else {
 		pr_debug("MDP IRQ mask old=%x new=%x\n",
@@ -1488,6 +1492,14 @@ void mdss_mdp_clk_ctrl(int enable)
 				changed++;
 		} else {
 			pr_err("Can not be turned off\n");
+#ifdef CONFIG_HUAWEI_DSM
+			/* report mdp clk dsm error */
+			#ifdef CONFIG_LCDKIT_DRIVER
+			lcdkit_report_dsm_err(DSM_LCD_MDSS_MDP_CLK_ERROR_NO,0,0,0);
+			#else
+			lcd_report_dsm_err(DSM_LCD_MDSS_MDP_CLK_ERROR_NO,0,0);
+			#endif
+#endif
 		}
 	}
 
@@ -1594,13 +1606,18 @@ static int mdss_mdp_gdsc_notifier_call(struct notifier_block *self,
 
 	mdata = container_of(self, struct mdss_data_type, gdsc_cb);
 
+#ifdef CONFIG_LCDKIT_DRIVER
+	if (!mdss_mdp_req_init_restore_cfg(mdata) &&
+		(event & REGULATOR_EVENT_ENABLE)) {
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	if (!mdss_mdp_req_init_restore_cfg(mdata) &&
+		(event & REGULATOR_EVENT_ENABLE)) {
+#else
 	if (event & REGULATOR_EVENT_ENABLE) {
-		/*
-		 * As SMMU in low tier targets is not power collapsible,
-		 * hence we don't need to restore sec configuration.
-		 */
-		if (!mdss_mdp_req_init_restore_cfg(mdata))
-			__mdss_restore_sec_cfg(mdata);
+#endif
+#endif
+		__mdss_restore_sec_cfg(mdata);
 	} else if (event & REGULATOR_EVENT_PRE_DISABLE) {
 		pr_debug("mdss gdsc is getting disabled\n");
 		/* halt the vbif transactions */
@@ -1763,8 +1780,8 @@ static void mdss_mdp_hw_rev_caps_init(struct mdss_data_type *mdata)
 	mdata->hflip_buffer_reused = true;
 	/* prevent disable of prefill calculations */
 	mdata->min_prefill_lines = 0xffff;
-	/* clock gating feature is disabled by default */
-	mdata->enable_gate = false;
+	/* clock gating feature is enabled by default */
+	mdata->enable_gate = true;
 	mdata->pixel_ram_size = 0;
 	mem_protect_sd_ctrl_id = MEM_PROTECT_SD_CTRL_FLAT;
 
@@ -1784,15 +1801,20 @@ static void mdss_mdp_hw_rev_caps_init(struct mdss_data_type *mdata)
 		mdata->per_pipe_ib_factor.denom = 5;
 		mdata->apply_post_scale_bytes = false;
 		mdata->hflip_buffer_reused = false;
-		mdata->min_prefill_lines = 21;
+		mdata->min_prefill_lines = 25;
 		mdata->has_ubwc = true;
 		mdata->pixel_ram_size = 50 * 1024;
+		mdata->rects_per_sspp[MDSS_MDP_PIPE_TYPE_DMA] = 2;
+
 		set_bit(MDSS_QOS_PER_PIPE_IB, mdata->mdss_qos_map);
+		set_bit(MDSS_QOS_TS_PREFILL, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_OVERHEAD_FACTOR, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_CDP, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_OTLIM, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_PER_PIPE_LUT, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_SIMPLIFIED_PREFILL, mdata->mdss_qos_map);
+		set_bit(MDSS_QOS_TS_PREFILL, mdata->mdss_qos_map);
+		set_bit(MDSS_QOS_IB_NOCR, mdata->mdss_qos_map);
 		set_bit(MDSS_CAPS_YUV_CONFIG, mdata->mdss_caps_map);
 		set_bit(MDSS_CAPS_SCM_RESTORE_NOT_REQUIRED,
 			mdata->mdss_caps_map);
@@ -1801,7 +1823,6 @@ static void mdss_mdp_hw_rev_caps_init(struct mdss_data_type *mdata)
 		mdss_mdp_init_default_prefill_factors(mdata);
 		mdss_set_quirk(mdata, MDSS_QUIRK_DSC_RIGHT_ONLY_PU);
 		mdss_set_quirk(mdata, MDSS_QUIRK_DSC_2SLICE_PU_THRPUT);
-		mdss_set_quirk(mdata, MDSS_QUIRK_HDR_SUPPORT_ENABLED);
 		break;
 	case MDSS_MDP_HW_REV_105:
 	case MDSS_MDP_HW_REV_109:
@@ -2080,8 +2101,6 @@ static u32 mdss_mdp_scaler_init(struct mdss_data_type *mdata,
 		if (ret)
 			return -EINVAL;
 	}
-
-	mutex_init(&mdata->scaler_off->scaler_lock);
 
 	return 0;
 }
@@ -2384,14 +2403,6 @@ ssize_t mdss_mdp_show_capabilities(struct device *dev,
 	if (mdata->clk_factor.numer)
 		SPRINT("clk_fudge_factor=%u,%u\n", mdata->clk_factor.numer,
 			mdata->clk_factor.denom);
-	if (mdata->has_rot_dwnscale) {
-		if (mdata->rot_dwnscale_min)
-			SPRINT("rot_dwnscale_min=%u\n",
-				mdata->rot_dwnscale_min);
-		if (mdata->rot_dwnscale_max)
-			SPRINT("rot_dwnscale_max=%u\n",
-				mdata->rot_dwnscale_max);
-	}
 	SPRINT("features=");
 	if (mdata->has_bwc)
 		SPRINT(" bwc");
@@ -2417,8 +2428,6 @@ ssize_t mdss_mdp_show_capabilities(struct device *dev,
 		SPRINT(" dest_scaler");
 	if (mdata->has_separate_rotator)
 		SPRINT(" separate_rotator");
-	if (mdss_has_quirk(mdata, MDSS_QUIRK_HDR_SUPPORT_ENABLED))
-		SPRINT(" hdr");
 	SPRINT("\n");
 #undef SPRINT
 
@@ -2740,13 +2749,9 @@ static int mdss_mdp_probe(struct platform_device *pdev)
 		MDSS_MDP_REG_DISP_INTF_SEL);
 	split_display = readl_relaxed(mdata->mdp_base +
 		MDSS_MDP_REG_SPLIT_DISPLAY_EN);
-	mdata->splash_intf_sel = intf_sel;
-	mdata->splash_split_disp = split_display;
-
 	if (intf_sel != 0) {
 		for (i = 0; i < 4; i++)
-			if ((intf_sel >> i*8) & 0x000000FF)
-				num_of_display_on++;
+			num_of_display_on += ((intf_sel >> i*8) & 0x000000FF);
 
 		/*
 		 * For split display enabled - DSI0, DSI1 interfaces are
@@ -2756,12 +2761,9 @@ static int mdss_mdp_probe(struct platform_device *pdev)
 		if (split_display)
 			num_of_display_on--;
 	}
-	if (!num_of_display_on) {
+	if (!num_of_display_on)
 		mdss_mdp_footswitch_ctrl_splash(false);
-		msm_bus_scale_client_update_request(
-					mdata->bus_hdl, 0);
-		mdata->ao_bw_uc_idx = 0;
-	} else {
+	else {
 		mdata->handoff_pending = true;
 		/*
 		 * If multiple displays are enabled in LK, ctrl_splash off will
@@ -4156,19 +4158,6 @@ static int mdss_mdp_parse_dt_misc(struct platform_device *pdev)
 		 "qcom,mdss-traffic-shaper-enabled");
 	mdata->has_rot_dwnscale = of_property_read_bool(pdev->dev.of_node,
 		"qcom,mdss-has-rotator-downscale");
-	if (mdata->has_rot_dwnscale) {
-		rc = of_property_read_u32(pdev->dev.of_node,
-			"qcom,mdss-rot-downscale-min",
-			&mdata->rot_dwnscale_min);
-		if (rc)
-			pr_err("Min rotator downscale property not specified\n");
-
-		rc = of_property_read_u32(pdev->dev.of_node,
-			"qcom,mdss-rot-downscale-max",
-			&mdata->rot_dwnscale_max);
-		if (rc)
-			pr_err("Max rotator downscale property not specified\n");
-	}
 
 	rc = of_property_read_u32(pdev->dev.of_node,
 		"qcom,mdss-dram-channels", &mdata->bus_channels);
@@ -4826,8 +4815,7 @@ static void mdss_mdp_footswitch_ctrl(struct mdss_data_type *mdata, int on)
 	}
 }
 
-int mdss_mdp_secure_display_ctrl(struct mdss_data_type *mdata,
-	unsigned int enable)
+int mdss_mdp_secure_display_ctrl(unsigned int enable)
 {
 	struct sd_ctrl_req {
 		unsigned int enable;
@@ -4835,12 +4823,6 @@ int mdss_mdp_secure_display_ctrl(struct mdss_data_type *mdata,
 	unsigned int resp = -1;
 	int ret = 0;
 	struct scm_desc desc;
-
-	if ((enable && (mdss_get_sd_client_cnt() > 0)) ||
-		(!enable && (mdss_get_sd_client_cnt() > 1))) {
-		mdss_update_sd_client(mdata, enable);
-		return ret;
-	}
 
 	desc.args[0] = request.enable = enable;
 	desc.arginfo = SCM_ARGS(1);
@@ -4859,7 +4841,6 @@ int mdss_mdp_secure_display_ctrl(struct mdss_data_type *mdata,
 	if (ret)
 		return ret;
 
-	mdss_update_sd_client(mdata, enable);
 	return resp;
 }
 

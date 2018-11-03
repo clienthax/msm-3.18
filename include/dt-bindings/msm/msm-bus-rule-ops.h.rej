@@ -1,0 +1,95 @@
+--- ../msm-3.18/arch/arm64/boot/dts/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 21:19:42.125576658 +0000
++++ ./arch/arm64/boot/dts/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 20:00:41.253219999 +0000
+@@ -1,4 +1,4 @@
+-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
++/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 and
+@@ -21,7 +21,9 @@
+ #define OP_LT	1
+ #define OP_GE	2
+ #define OP_GT	3
+-#define OP_NOOP	4
++#define OP_NOOP 4
++#define OP_AND	5
++#define OP_OR	6
+ 
+ #define RULE_STATE_NOT_APPLIED	0
+ #define RULE_STATE_APPLIED	1
+--- ../msm-3.18/arch/metag/boot/dts/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 21:19:42.125576658 +0000
++++ ./arch/metag/boot/dts/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 20:00:41.457322000 +0000
+@@ -1,4 +1,4 @@
+-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
++/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 and
+@@ -21,7 +21,9 @@
+ #define OP_LT	1
+ #define OP_GE	2
+ #define OP_GT	3
+-#define OP_NOOP	4
++#define OP_NOOP 4
++#define OP_AND	5
++#define OP_OR	6
+ 
+ #define RULE_STATE_NOT_APPLIED	0
+ #define RULE_STATE_APPLIED	1
+--- ../msm-3.18/arch/mips/boot/dts/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 21:19:42.125576658 +0000
++++ ./arch/mips/boot/dts/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 20:00:41.481334000 +0000
+@@ -1,4 +1,4 @@
+-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
++/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 and
+@@ -21,7 +21,9 @@
+ #define OP_LT	1
+ #define OP_GE	2
+ #define OP_GT	3
+-#define OP_NOOP	4
++#define OP_NOOP 4
++#define OP_AND	5
++#define OP_OR	6
+ 
+ #define RULE_STATE_NOT_APPLIED	0
+ #define RULE_STATE_APPLIED	1
+--- ../msm-3.18/arch/powerpc/boot/dts/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 21:19:42.125576658 +0000
++++ ./arch/powerpc/boot/dts/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 20:00:41.581384000 +0000
+@@ -1,4 +1,4 @@
+-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
++/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 and
+@@ -21,7 +21,9 @@
+ #define OP_LT	1
+ #define OP_GE	2
+ #define OP_GT	3
+-#define OP_NOOP	4
++#define OP_NOOP 4
++#define OP_AND	5
++#define OP_OR	6
+ 
+ #define RULE_STATE_NOT_APPLIED	0
+ #define RULE_STATE_APPLIED	1
+--- ../msm-3.18/include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 21:19:42.125576658 +0000
++++ ./include/dt-bindings/msm/msm-bus-rule-ops.h	2018-11-03 20:00:43.846516000 +0000
+@@ -1,4 +1,4 @@
+-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
++/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 and
+@@ -21,7 +21,9 @@
+ #define OP_LT	1
+ #define OP_GE	2
+ #define OP_GT	3
+-#define OP_NOOP	4
++#define OP_NOOP 4
++#define OP_AND	5
++#define OP_OR	6
+ 
+ #define RULE_STATE_NOT_APPLIED	0
+ #define RULE_STATE_APPLIED	1

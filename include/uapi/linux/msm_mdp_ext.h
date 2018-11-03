@@ -34,9 +34,9 @@
  * To allow proper structure padding for 64bit/32bit target
  */
 #ifdef __LP64
-#define MDP_LAYER_COMMIT_V1_PAD 1
-#else
 #define MDP_LAYER_COMMIT_V1_PAD 3
+#else
+#define MDP_LAYER_COMMIT_V1_PAD 4
 #endif
 
 /**********************************************************************
@@ -83,6 +83,49 @@ LAYER FLAG CONFIGURATION
 
 /* Flag enabled qseed3 scaling for the current layer */
 #define MDP_LAYER_ENABLE_QSEED3_SCALE   0x800
+
+/*
+ * layer will work in multirect mode, where single hardware should
+ * fetch multiple rectangles with a single hardware
+ */
+#define MDP_LAYER_MULTIRECT_ENABLE		0x1000
+
+/*
+ * if flag present and multirect is enabled, multirect will work in parallel
+ * fetch mode, otherwise it will default to serial fetch mode.
+ */
+#define MDP_LAYER_MULTIRECT_PARALLEL_MODE	0x2000
+
+/**********************************************************************
+DESTINATION SCALER FLAG CONFIGURATION
+**********************************************************************/
+
+/* Enable/disable Destination scaler */
+#define MDP_DESTSCALER_ENABLE		0x1
+
+/*
+ * Indicating mdp_destination_scaler_data contains
+ * Scaling parameter update. Can be set anytime.
+ */
+#define MDP_DESTSCALER_SCALE_UPDATE	0x2
+
+/*
+ * Indicating mdp_destination_scaler_data contains
+ * Detail enhancement setting update. Can be set anytime.
+ */
+#define MDP_DESTSCALER_ENHANCER_UPDATE	0x4
+
+/*
+ * layer will work in multirect mode, where single hardware should
+ * fetch multiple rectangles with a single hardware
+ */
+#define MDP_LAYER_MULTIRECT_ENABLE		0x1000
+
+/*
+ * if flag present and multirect is enabled, multirect will work in parallel
+ * fetch mode, otherwise it will default to serial fetch mode.
+ */
+#define MDP_LAYER_MULTIRECT_PARALLEL_MODE	0x2000
 
 /**********************************************************************
 DESTINATION SCALER FLAG CONFIGURATION
@@ -376,18 +419,6 @@ struct mdp_destination_scaler_data {
 	uint64_t	__user scale;
 };
 
-/* Enable Deterministic Frame Rate Control (FRC) */
-#define MDP_VIDEO_FRC_ENABLE (1 << 0)
-
-struct mdp_frc_info {
-	/* flags to control FRC feature */
-	uint32_t flags;
-	/* video frame count per frame */
-	uint32_t frame_cnt;
-	/* video timestamp per frame in millisecond unit */
-	int64_t timestamp;
-};
-
 /*
  * Commit structure holds layer stack send by client for validate and commit
  * call. If layers are different between validate and commit call then commit
@@ -465,9 +496,6 @@ struct mdp_layer_commit_v1 {
 	 * Represents number of Destination scaler data provied by userspace.
 	 */
 	uint32_t		dest_scaler_cnt;
-
-	/* FRC info per device which contains frame count and timestamp */
-	struct mdp_frc_info __user *frc_info;
 
 	/* 32-bits reserved value for future usage. */
 	uint32_t		reserved[MDP_LAYER_COMMIT_V1_PAD];

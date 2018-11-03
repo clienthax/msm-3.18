@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2015,2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -465,10 +465,25 @@ struct i2c_msm_resources {
 	struct pinctrl              *pinctrl;
 	struct pinctrl_state        *gpio_state_active;
 	struct pinctrl_state        *gpio_state_suspend;
+	struct pinctrl_state        *gpio_state_default;
+
 };
 
 #define I2C_MSM_PINCTRL_ACTIVE       "i2c_active"
 #define I2C_MSM_PINCTRL_SUSPEND      "i2c_sleep"
+#define I2C_MSM_PINCTRL_DEFAULT      "i2c_default"
+#define I2C_MSM_RECOVERY_BUS_TIMES   10
+
+enum i2c_msm_pinctl_state{
+	I2C_MSM_DFS_ACTIVE,
+	I2C_MSM_DFS_SUSPEND,
+	I2C_MSM_DFS_DEFAULT,
+};
+enum {
+	I2C_MSM_DEFAULT_CLK,
+	I2C_MSM_DEFAULT_DATA,
+	I2C_MSM_DEFAULT_MAX_GPIO,
+};
 
 /*
  * i2c_msm_xfer_buf: current xfer position and preprocessed tags
@@ -552,7 +567,6 @@ struct i2c_msm_xfer {
 	int                        msg_cnt;
 	enum i2c_msm_xfer_mode_id  mode_id;
 	struct completion          complete;
-	struct completion          rx_complete;
 	size_t                     rx_cnt;
 	size_t                     tx_cnt;
 	size_t                     rx_ovrhd_cnt;
@@ -581,8 +595,6 @@ struct i2c_msm_xfer {
  * @rsrcs    resources from platform data including clocks, gpios, irqs, and
  *           memory regions.
  * @mstr_clk_ctl cached value for programming to mstr_clk_ctl register
- * @i2c_sts_reg	 status of QUP_I2C_MASTER_STATUS register.
- * @qup_op_reg	 status of QUP_OPERATIONAL register.
  */
 struct i2c_msm_ctrl {
 	struct device             *dev;
@@ -591,9 +603,8 @@ struct i2c_msm_ctrl {
 	struct i2c_msm_dbgfs       dbgfs;
 	struct i2c_msm_resources   rsrcs;
 	u32                        mstr_clk_ctl;
-	u32			   i2c_sts_reg;
-	u32			   qup_op_reg;
 	enum i2c_msm_power_state   pwr_state;
+	int gpios[I2C_MSM_DEFAULT_MAX_GPIO];
 };
 
 /* Enum for the profiling event types */

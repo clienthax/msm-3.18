@@ -21,6 +21,7 @@
 
 enum android_function_index {
 	ANDROID_FFS,
+	ANDROID_FFS_HDB,
 	ANDROID_MBIM_BAM,
 	ANDROID_ECM_BAM,
 	ANDROID_AUDIO,
@@ -29,7 +30,6 @@ enum android_function_index {
 	ANDROID_DIAG,
 	ANDROID_QDSS_BAM,
 	ANDROID_SERIAL,
-	ANDROID_SERIAL_CONFIG2,
 	ANDROID_CCID,
 	ANDROID_ACM,
 	ANDROID_MTP,
@@ -59,6 +59,8 @@ static enum android_function_index name_to_func_idx(const char *name)
 
 	if (!strncasecmp("FFS", name, FUNC_NAME_LEN))
 		return ANDROID_FFS;
+	if (!strncasecmp("FFS_HDB", name, FUNC_NAME_LEN))
+		return ANDROID_FFS_HDB;
 	if (!strncasecmp("USB_MBIM", name, FUNC_NAME_LEN))
 		return ANDROID_MBIM_BAM;
 	if (!strncasecmp("ECM_QC", name, FUNC_NAME_LEN))
@@ -75,8 +77,6 @@ static enum android_function_index name_to_func_idx(const char *name)
 		return ANDROID_QDSS_BAM;
 	if (!strncasecmp("SERIAL", name, FUNC_NAME_LEN))
 		return ANDROID_SERIAL;
-	if (!strncasecmp("SERIAL_CONFIG2", name, FUNC_NAME_LEN))
-		return ANDROID_SERIAL_CONFIG2;
 	if (!strncasecmp("CCID", name, FUNC_NAME_LEN))
 		return ANDROID_CCID;
 	if (!strncasecmp("ACM", name, FUNC_NAME_LEN))
@@ -100,7 +100,7 @@ static enum android_function_index name_to_func_idx(const char *name)
 	if (!strncasecmp("AUDIO_SOURCE", name, FUNC_NAME_LEN))
 		return ANDROID_AUDIO_SRC;
 	if (!strncasecmp("CHARGING", name, FUNC_NAME_LEN))
-		return ANDROID_CHARGER;
+		return ANDROID_AUDIO_SRC;
 	if (!strncasecmp("MIDI", name, FUNC_NAME_LEN))
 		return ANDROID_MIDI;
 	if (!strncasecmp("RNDIS_GSI", name, FUNC_NAME_LEN))
@@ -129,13 +129,13 @@ struct android_usb_platform_data {
 	int (*update_pid_and_serial_num)(uint32_t, const char *);
 	u32 pm_qos_latency[MAX_VOTES];
 	u8 usb_core_id;
+	bool is_not_support_ipa;
 };
 
 extern int gport_setup(struct usb_configuration *c);
 extern void gport_cleanup(void);
 extern int gserial_init_port(int port_num, const char *name,
 					const char *port_name);
-extern void gserial_deinit_port(void);
 extern bool gserial_is_connected(void);
 extern bool gserial_is_dun_w_softap_enabled(void);
 extern void gserial_dun_w_softap_enable(bool enable);

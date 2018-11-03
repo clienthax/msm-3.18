@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -753,7 +753,7 @@ inc_loop:
 			list_del(&mport->list);
 			kfree(mport);
 		}
-		if (!mport_next || (&mport_next->list == &swrm->mport_list)) {
+		if (!mport_next) {
 			dev_err(swrm->dev, "%s: end of list\n", __func__);
 			break;
 		}
@@ -1021,6 +1021,9 @@ port_fail:
 mem_fail:
 	list_for_each_safe(ptr, next, &swrm->mport_list) {
 		mport = list_entry(ptr, struct swrm_mports, list);
+		if (!mport)
+			continue;
+
 		for (i = 0; i < portinfo->num_port; i++) {
 			if (portinfo->port_id[i] == mstr_ports[mport->id]) {
 				port = swrm_get_port(master,

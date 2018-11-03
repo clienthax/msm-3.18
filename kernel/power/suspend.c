@@ -30,18 +30,19 @@
 #include <trace/events/power.h>
 #include <linux/compiler.h>
 #include <linux/wakeup_reason.h>
-
+#ifdef CONFIG_LOG_JANK
+#include <huawei_platform/log/log_jank.h>
+#endif
 #include "power.h"
 
 const char *pm_labels[] = { "mem", "standby", "freeze", NULL };
 const char *pm_states[PM_SUSPEND_MAX];
+bool ready_to_wakeup;
 
 static const struct platform_suspend_ops *suspend_ops;
 static const struct platform_freeze_ops *freeze_ops;
 static DECLARE_WAIT_QUEUE_HEAD(suspend_freeze_wait_head);
-
-enum freeze_state __read_mostly suspend_freeze_state;
-static DEFINE_SPINLOCK(suspend_freeze_lock);
+static bool suspend_freeze_wake;
 
 void freeze_set_ops(const struct platform_freeze_ops *ops)
 {
@@ -52,49 +53,22 @@ void freeze_set_ops(const struct platform_freeze_ops *ops)
 
 static void freeze_begin(void)
 {
-	suspend_freeze_state = FREEZE_STATE_NONE;
+	suspend_freeze_wake = false;
 }
 
 static void freeze_enter(void)
 {
-	spin_lock_irq(&suspend_freeze_lock);
-	if (pm_wakeup_pending())
-		goto out;
-
-	suspend_freeze_state = FREEZE_STATE_ENTER;
-	spin_unlock_irq(&suspend_freeze_lock);
-
-	get_online_cpus();
+	cpuidle_use_deepest_state(true);
 	cpuidle_resume();
-
-	/* Push all the CPUs into the idle loop. */
-	wake_up_all_idle_cpus();
-	pr_debug("PM: suspend-to-idle\n");
-	/* Make the current CPU wait so it can enter the idle loop too. */
-	wait_event(suspend_freeze_wait_head,
-		   suspend_freeze_state == FREEZE_STATE_WAKE);
-	pr_debug("PM: resume from suspend-to-idle\n");
-
+	wait_event(suspend_freeze_wait_head, suspend_freeze_wake);
 	cpuidle_pause();
-	put_online_cpus();
-
-	spin_lock_irq(&suspend_freeze_lock);
-
- out:
-	suspend_freeze_state = FREEZE_STATE_NONE;
-	spin_unlock_irq(&suspend_freeze_lock);
+	cpuidle_use_deepest_state(false);
 }
 
 void freeze_wake(void)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&suspend_freeze_lock, flags);
-	if (suspend_freeze_state > FREEZE_STATE_NONE) {
-		suspend_freeze_state = FREEZE_STATE_WAKE;
-		wake_up(&suspend_freeze_wait_head);
-	}
-	spin_unlock_irqrestore(&suspend_freeze_lock, flags);
+	suspend_freeze_wake = true;
+	wake_up(&suspend_freeze_wait_head);
 }
 EXPORT_SYMBOL_GPL(freeze_wake);
 
@@ -256,18 +230,16 @@ static int suspend_test(int level)
  */
 static int suspend_prepare(suspend_state_t state)
 {
-	int error, nr_calls = 0;
+	int error;
 
 	if (!sleep_state_supported(state))
 		return -EPERM;
 
 	pm_prepare_console();
 
-	error = __pm_notifier_call_chain(PM_SUSPEND_PREPARE, -1, &nr_calls);
-	if (error) {
-		nr_calls--;
+	error = pm_notifier_call_chain(PM_SUSPEND_PREPARE);
+	if (error)
 		goto Finish;
-	}
 
 	trace_suspend_resume(TPS("freeze_processes"), 0, true);
 	error = suspend_freeze_processes();
@@ -278,7 +250,7 @@ static int suspend_prepare(suspend_state_t state)
 	suspend_stats.failed_freeze++;
 	dpm_save_failed_step(SUSPEND_FREEZE);
  Finish:
-	__pm_notifier_call_chain(PM_POST_SUSPEND, nr_calls, NULL);
+	pm_notifier_call_chain(PM_POST_SUSPEND);
 	pm_restore_console();
 	return error;
 }
@@ -378,8 +350,6 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 			log_suspend_abort_reason(suspend_abort);
 			error = -EBUSY;
 		}
-
-		start_logging_wakeup_reasons();
 		syscore_resume();
 	}
 
@@ -495,11 +465,10 @@ static int enter_state(suspend_state_t state)
 
 	if (state == PM_SUSPEND_FREEZE)
 		freeze_begin();
-
 	trace_suspend_resume(TPS("sync_filesystems"), 0, true);
-	printk(KERN_INFO "PM: Syncing filesystems ... ");
-	sys_sync();
-	printk("done.\n");
+	printk(KERN_INFO "PM: Syncing filesystems put the sync in the queue... ");
+	suspend_sys_sync_queue();
+	printk("put it done.\n");
 	trace_suspend_resume(TPS("sync_filesystems"), 0, false);
 
 	pr_debug("PM: Preparing system for %s sleep\n", pm_states[state]);
@@ -527,11 +496,11 @@ static int enter_state(suspend_state_t state)
 static void pm_suspend_marker(char *annotation)
 {
 	struct timespec ts;
-	struct tm tm;
+	struct rtc_time tm;
 
 	getnstimeofday(&ts);
-	time_to_tm(ts.tv_sec, 0, &tm);
-	pr_info("PM: suspend %s %ld-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
+	rtc_time_to_tm(ts.tv_sec, &tm);
+	pr_info("PM: suspend %s %d-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
 		annotation, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
 }
@@ -546,11 +515,18 @@ static void pm_suspend_marker(char *annotation)
 int pm_suspend(suspend_state_t state)
 {
 	int error;
+#ifdef CONFIG_LOG_JANK
+	if (state == PM_SUSPEND_ON)
+		LOG_JANK_D(JLID_KERNEL_PM_SUSPEND_WAKEUP, "%s,state=%d","JL_KERNEL_PM_SUSPEND_WAKEUP", state);
+	else
+		LOG_JANK_D(JLID_KERNEL_PM_SUSPEND_SLEEP, "%s,state=%d","JL_KERNEL_PM_SUSPEND_SLEEP", state);
+#endif
 
 	if (state <= PM_SUSPEND_ON || state >= PM_SUSPEND_MAX)
 		return -EINVAL;
 
 	pm_suspend_marker("entry");
+	ready_to_wakeup = true;
 	error = enter_state(state);
 	if (error) {
 		suspend_stats.fail++;
@@ -558,6 +534,7 @@ int pm_suspend(suspend_state_t state)
 	} else {
 		suspend_stats.success++;
 	}
+	ready_to_wakeup = false;
 	pm_suspend_marker("exit");
 	return error;
 }

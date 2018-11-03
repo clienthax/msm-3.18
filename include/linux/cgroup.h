@@ -250,6 +250,7 @@ enum {
 	CGRP_ROOT_SANE_BEHAVIOR	= (1 << 0), /* __DEVEL__sane_behavior specified */
 	CGRP_ROOT_NOPREFIX	= (1 << 1), /* mounted subsystems have no named prefix */
 	CGRP_ROOT_XATTR		= (1 << 2), /* supports extended attributes */
+	CGRP_ROOT_CPUSET_NOPREFIX	= (1 << 3), /* only cpuset have no named prefix */
 };
 
 /*
@@ -923,6 +924,7 @@ int cgroup_attach_task_to_root(struct task_struct *tsk, int wait);
  */
 int subsys_cgroup_allow_attach(struct cgroup_subsys_state *css,
 			       struct cgroup_taskset *tset);
+
 
 #else /* !CONFIG_CGROUPS */
 

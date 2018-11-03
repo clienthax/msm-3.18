@@ -42,14 +42,12 @@
 #define CVD_VERSION_0_0                      "0.0"
 #define CVD_VERSION_2_1                      "2.1"
 #define CVD_VERSION_2_2                      "2.2"
-#define CVD_VERSION_2_3                      "2.3"
 
 #define CVD_INT_VERSION_DEFAULT              0
 #define CVD_INT_VERSION_0_0                  1
 #define CVD_INT_VERSION_2_1                  2
 #define CVD_INT_VERSION_2_2                  3
-#define CVD_INT_VERSION_2_3                  4
-#define CVD_INT_VERSION_LAST                 CVD_INT_VERSION_2_3
+#define CVD_INT_VERSION_LAST                 CVD_INT_VERSION_2_2
 #define CVD_INT_VERSION_MAX                  (CVD_INT_VERSION_LAST + 1)
 
 struct cvd_version_table {
@@ -143,7 +141,7 @@ struct share_mem_buf {
 struct mem_map_table {
 	dma_addr_t		phys;
 	void			*data;
-	size_t			size; /* size of buffer */
+	uint32_t		size; /* size of buffer */
 	struct ion_handle	*handle;
 	struct ion_client	*client;
 };

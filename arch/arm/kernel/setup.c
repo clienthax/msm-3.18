@@ -775,7 +775,7 @@ static void __init request_standard_resources(const struct machine_desc *mdesc)
 	struct resource *res;
 
 	kernel_code.start   = virt_to_phys(_text);
-	kernel_code.end     = virt_to_phys(__init_begin - 1);
+	kernel_code.end     = virt_to_phys(_etext - 1);
 	kernel_data.start   = virt_to_phys(_sdata);
 	kernel_data.end     = virt_to_phys(_end - 1);
 
@@ -824,6 +824,38 @@ struct screen_info screen_info = {
  .orig_video_points	= 8
 };
 #endif
+
+typedef enum
+{
+	RUNMODE_FLAG_NORMAL,
+	RUNMODE_FLAG_FACTORY,
+	RUNMODE_FLAG_UNKNOW
+}hw_runmode_t;
+
+#define RUNMODE_FLAG_NORMAL_KEY     "normal"
+#define RUNMODE_FLAG_FACTORY_KEY    "factory"
+
+static hw_runmode_t runmode_factory = RUNMODE_FLAG_UNKNOW;
+
+static int __init init_runmode(char *str)
+{
+	if(!str || !(*str)) {
+		printk(KERN_CRIT"%s:get run mode fail\n",__func__);
+		return 0;
+	}
+
+	if(!strncmp(str, RUNMODE_FLAG_FACTORY_KEY, sizeof(RUNMODE_FLAG_FACTORY_KEY)-1)) {
+		runmode_factory = RUNMODE_FLAG_FACTORY;
+		printk(KERN_NOTICE "%s:run mode is factory\n", __func__);
+	} else {
+		runmode_factory = RUNMODE_FLAG_NORMAL;
+		printk(KERN_NOTICE "%s:run mode is normal\n", __func__);
+	}
+
+	return 1;
+}
+
+__setup("androidboot.huawei_swtype=", init_runmode);
 
 static int __init customize_machine(void)
 {

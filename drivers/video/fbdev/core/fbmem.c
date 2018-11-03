@@ -33,14 +33,49 @@
 #include <linux/efi.h>
 #include <linux/fb.h>
 
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <huawei_platform/touchscreen/hw_tp_common.h>
+#endif
+#endif
+
 #include <asm/fb.h>
 
+#ifdef CONFIG_LCDKIT_DRIVER
+extern int tp_reset_enable;
+extern int lcdkit_msg_level ;
+extern u32 lcdkit_get_panel_off_reset_high(void);
+
+#ifndef LCDKIT_INFO
+#define LCDKIT_INFO(msg, ...)    \
+    do { if (lcdkit_msg_level > 6)  \
+        printk(KERN_INFO "[lcdkit]%s: "msg, __func__, ## __VA_ARGS__); } while (0)
+#endif
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+extern int lcd_debug_mask ;
+extern int tp_reset_enable;
+#define LCD_INFO 2
+
+#ifndef LCD_LOG_INFO
+#define LCD_LOG_INFO( x...)			\
+do{			\
+	if( lcd_debug_mask >= LCD_INFO )			\
+	{			\
+		printk(KERN_ERR "[LCD_INFO] " x);			\
+	}			\
+			\
+}while(0)
+#endif
+#endif
+#endif
 
     /*
      *  Frame buffer device initialization and setup routines
      */
 
 #define FBPIXMAPSIZE	(1024 * 8)
+
 
 static DEFINE_MUTEX(registration_lock);
 
@@ -1052,11 +1087,14 @@ fb_set_var(struct fb_info *info, struct fb_var_screeninfo *var)
 }
 EXPORT_SYMBOL(fb_set_var);
 
-int
-fb_blank(struct fb_info *info, int blank)
-{	
+#ifdef CONFIG_LCDKIT_DRIVER
+int fb_blank(struct fb_info *info, int blank)
+{
 	struct fb_event event;
 	int ret = -EINVAL, early_ret;
+
+	unsigned long timeout ;
+	LCDKIT_INFO("Enter %s, blank_mode = [%d].\n", __func__, blank);
 
  	if (blank > FB_BLANK_POWERDOWN)
  		blank = FB_BLANK_POWERDOWN;
@@ -1066,11 +1104,43 @@ fb_blank(struct fb_info *info, int blank)
 
 	early_ret = fb_notifier_call_chain(FB_EARLY_EVENT_BLANK, &event);
 
+    if (lcdkit_get_panel_off_reset_high())
+    {
+    	if((blank == FB_BLANK_UNBLANK) || (blank == FB_BLANK_POWERDOWN))
+    	{
+    		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+    		LCDKIT_INFO(":when power on wake tp pre lcd.\n");
+    	}
+    }
+    else
+    {
+    	if(blank == FB_BLANK_UNBLANK)
+    	{
+    		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+    		LCDKIT_INFO(":when power on wake tp pre lcd.\n");
+    	}
+    }
+
+	timeout = jiffies ;
+
 	if (info->fbops->fb_blank)
  		ret = info->fbops->fb_blank(blank, info);
 
+    LCDKIT_INFO(": fb blank time = %u\n", jiffies_to_msecs(jiffies-timeout));
+
 	if (!ret)
-		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+	{
+        if (lcdkit_get_panel_off_reset_high())
+        {
+            if ((blank != FB_BLANK_UNBLANK) && (blank != FB_BLANK_POWERDOWN))
+                fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+        }
+        else
+        {
+            if (blank != FB_BLANK_UNBLANK)
+                fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+        }
+	}
 	else {
 		/*
 		 * if fb_blank is failed then revert effects of
@@ -1080,8 +1150,68 @@ fb_blank(struct fb_info *info, int blank)
 			fb_notifier_call_chain(FB_R_EARLY_EVENT_BLANK, &event);
 	}
 
+    LCDKIT_INFO("Exit %s, blank_mode = [%d].\n",__func__,blank);
+
  	return ret;
 }
+#else
+int
+fb_blank(struct fb_info *info, int blank)
+{
+	struct fb_event event;
+	int ret = -EINVAL, early_ret;
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	bool touch_pre_lcd = 0;
+	unsigned long timeout ;
+	LCD_LOG_INFO("Enter %s, blank_mode = [%d].\n",__func__,blank);
+#endif
+
+ 	if (blank > FB_BLANK_POWERDOWN)
+ 		blank = FB_BLANK_POWERDOWN;
+
+	event.info = info;
+	event.data = &blank;
+
+	early_ret = fb_notifier_call_chain(FB_EARLY_EVENT_BLANK, &event);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	touch_pre_lcd = get_tp_pre_lcd_flag();
+	if(touch_pre_lcd&& blank == FB_BLANK_UNBLANK)
+	{
+		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+		LCD_LOG_INFO("%s:when power on wake tp pre lcd.\n",__func__);
+	}
+	timeout = jiffies ;
+#endif
+	if (info->fbops->fb_blank)
+ 		ret = info->fbops->fb_blank(blank, info);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	LCD_LOG_INFO("%s: fb blank time = %u\n",
+			__func__,jiffies_to_msecs(jiffies-timeout));
+#endif
+	if (!ret)
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	{
+				if (!touch_pre_lcd||blank != FB_BLANK_UNBLANK)
+#endif
+					fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	}
+#endif
+	else {
+		/*
+		 * if fb_blank is failed then revert effects of
+		 * the early blank event.
+		 */
+		if (!early_ret)
+			fb_notifier_call_chain(FB_R_EARLY_EVENT_BLANK, &event);
+	}
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	LCD_LOG_INFO("Exit %s, blank_mode = [%d].\n",__func__,blank);
+#endif
+
+ 	return ret;
+}
+#endif
 EXPORT_SYMBOL(fb_blank);
 
 static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
@@ -1096,13 +1226,6 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 	struct fb_event event;
 	void __user *argp = (void __user *)arg;
 	long ret = 0;
-
-	memset(&var, 0, sizeof(var));
-	memset(&fix, 0, sizeof(fix));
-	memset(&con2fb, 0, sizeof(con2fb));
-	memset(&cmap_from, 0, sizeof(cmap_from));
-	memset(&cmap, 0, sizeof(cmap));
-	memset(&event, 0, sizeof(event));
 
 	switch (cmd) {
 	case FBIOGET_VSCREENINFO:
@@ -1697,12 +1820,12 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 	return 0;
 }
 
-static int unbind_console(struct fb_info *fb_info)
+static int do_unregister_framebuffer(struct fb_info *fb_info)
 {
 	struct fb_event event;
-	int ret;
-	int i = fb_info->node;
+	int i, ret = 0;
 
+	i = fb_info->node;
 	if (i < 0 || i >= FB_MAX || registered_fb[i] != fb_info)
 		return -EINVAL;
 
@@ -1717,29 +1840,17 @@ static int unbind_console(struct fb_info *fb_info)
 	unlock_fb_info(fb_info);
 	console_unlock();
 
-	return ret;
-}
-
-static int __unlink_framebuffer(struct fb_info *fb_info);
-
-static int do_unregister_framebuffer(struct fb_info *fb_info)
-{
-	struct fb_event event;
-	int ret;
-
-	ret = unbind_console(fb_info);
-
 	if (ret)
 		return -EINVAL;
 
 	pm_vt_switch_unregister(fb_info->dev);
 
-	__unlink_framebuffer(fb_info);
+	unlink_framebuffer(fb_info);
 	if (fb_info->pixmap.addr &&
 	    (fb_info->pixmap.flags & FB_PIXMAP_DEFAULT))
 		kfree(fb_info->pixmap.addr);
 	fb_destroy_modelist(&fb_info->modelist);
-	registered_fb[fb_info->node] = NULL;
+	registered_fb[i] = NULL;
 	num_registered_fb--;
 	fb_cleanup_device(fb_info);
 	event.info = fb_info;
@@ -1752,7 +1863,7 @@ static int do_unregister_framebuffer(struct fb_info *fb_info)
 	return 0;
 }
 
-static int __unlink_framebuffer(struct fb_info *fb_info)
+int unlink_framebuffer(struct fb_info *fb_info)
 {
 	int i;
 
@@ -1764,20 +1875,6 @@ static int __unlink_framebuffer(struct fb_info *fb_info)
 		device_destroy(fb_class, MKDEV(FB_MAJOR, i));
 		fb_info->dev = NULL;
 	}
-
-	return 0;
-}
-
-int unlink_framebuffer(struct fb_info *fb_info)
-{
-	int ret;
-
-	ret = __unlink_framebuffer(fb_info);
-	if (ret)
-		return ret;
-
-	unbind_console(fb_info);
-
 	return 0;
 }
 EXPORT_SYMBOL(unlink_framebuffer);

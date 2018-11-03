@@ -26,12 +26,21 @@
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
-#include <linux/mmc/ring_buffer.h>
-
 #include <linux/mmc/slot-gpio.h>
 
 #include "core.h"
 #include "host.h"
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+#include <linux/mmc/dsm_sdcard.h>
+struct dsm_dev dsm_sdcard = {
+	.name = "dsm_sdcard",
+	.fops = NULL,
+	.buff_size = 1024,
+};
+struct dsm_client *sdcard_dclient = NULL;
+char g_dsm_log_sum[1024] = {0};
+#endif
 
 #define cls_dev_to_mmc_host(d)	container_of(d, struct mmc_host, class_dev)
 #define MMC_DEVFRQ_DEFAULT_UP_THRESHOLD 35
@@ -128,7 +137,7 @@ static void mmc_host_clk_gate_delayed(struct mmc_host *host)
 	}
 	mutex_lock(&host->clk_gate_mutex);
 	spin_lock_irqsave(&host->clk_lock, flags);
-	if (!host->clk_requests) {
+	if (!host->clk_requests && !host->cmdq_ctx.active_reqs) {
 		spin_unlock_irqrestore(&host->clk_lock, flags);
 		/* This will set host->ios.clock to 0 */
 		mmc_gate_clock(host);
@@ -311,75 +320,6 @@ static inline void mmc_host_clk_sysfs_init(struct mmc_host *host)
 }
 
 #endif
-
-void mmc_retune_enable(struct mmc_host *host)
-{
-	host->can_retune = 1;
-	if (host->retune_period)
-		mod_timer(&host->retune_timer,
-			  jiffies + host->retune_period * HZ);
-}
-EXPORT_SYMBOL(mmc_retune_enable);
-
-void mmc_retune_disable(struct mmc_host *host)
-{
-	host->can_retune = 0;
-	del_timer_sync(&host->retune_timer);
-	host->retune_now = 0;
-	host->need_retune = 0;
-}
-EXPORT_SYMBOL(mmc_retune_disable);
-
-void mmc_retune_timer_stop(struct mmc_host *host)
-{
-	del_timer_sync(&host->retune_timer);
-}
-EXPORT_SYMBOL(mmc_retune_timer_stop);
-
-void mmc_retune_hold(struct mmc_host *host)
-{
-	if (!host->hold_retune)
-		host->retune_now = 1;
-	host->hold_retune += 1;
-}
-
-void mmc_retune_release(struct mmc_host *host)
-{
-	if (host->hold_retune)
-		host->hold_retune -= 1;
-	else
-		WARN_ON(1);
-}
-
-int mmc_retune(struct mmc_host *host)
-{
-	int err;
-
-	if (host->retune_now)
-		host->retune_now = 0;
-	else
-		return 0;
-
-	if (!host->need_retune || host->doing_retune || !host->card)
-		return 0;
-
-	host->need_retune = 0;
-
-	host->doing_retune = 1;
-
-	err = mmc_execute_tuning(host->card);
-
-	host->doing_retune = 0;
-
-	return err;
-}
-
-static void mmc_retune_timer(unsigned long data)
-{
-	struct mmc_host *host = (struct mmc_host *)data;
-
-	mmc_retune_needed(host);
-}
 
 /**
  *	mmc_of_parse() - parse host's device-tree node
@@ -591,12 +531,18 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	host->slot.cd_irq = -EINVAL;
 
 	spin_lock_init(&host->lock);
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	if (!sdcard_dclient) {
+		sdcard_dclient = dsm_register_client(&dsm_sdcard);
+	}
+#endif
+
 	init_waitqueue_head(&host->wq);
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
 #ifdef CONFIG_PM
 	host->pm_notify.notifier_call = mmc_pm_notify;
 #endif
-	setup_timer(&host->retune_timer, mmc_retune_timer, (unsigned long)host);
 
 	/*
 	 * By default, hosts do not support SGIO or large requests.
@@ -615,6 +561,10 @@ free:
 	kfree(host);
 	return NULL;
 }
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+EXPORT_SYMBOL(sdcard_dclient);
+#endif
 
 EXPORT_SYMBOL(mmc_alloc_host);
 
@@ -859,7 +809,6 @@ int mmc_add_host(struct mmc_host *host)
 	mmc_add_host_debugfs(host);
 #endif
 	mmc_host_clk_sysfs_init(host);
-	mmc_trace_init(host);
 
 	err = sysfs_create_group(&host->class_dev.kobj, &clk_scaling_attr_grp);
 	if (err)

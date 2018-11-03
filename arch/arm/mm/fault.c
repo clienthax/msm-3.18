@@ -171,10 +171,25 @@ __do_user_fault(struct task_struct *tsk, unsigned long addr,
 #ifdef CONFIG_DEBUG_USER
 	if (((user_debug & UDBG_SEGV) && (sig == SIGSEGV)) ||
 	    ((user_debug & UDBG_BUS)  && (sig == SIGBUS))) {
+#if 1
+		/* when appeared user exception and repeated,
+		   just print the first exception log */
+		static pid_t prev_tgid=0xFFFF;
+		static unsigned long prev_addr=0xFFFFFFFF;
+		if (prev_tgid != tsk->tgid || prev_addr != addr ) {
+			printk(KERN_DEBUG "%s: unhandled page fault (%d) at 0x%08lx, code 0x%03x\n",
+					tsk->comm, sig, addr, fsr);
+			show_pte(tsk->mm, addr);
+			show_regs(regs);
+			prev_tgid = tsk->tgid;
+			prev_addr = addr;
+		}
+#else
 		printk(KERN_DEBUG "%s: unhandled page fault (%d) at 0x%08lx, code 0x%03x\n",
 		       tsk->comm, sig, addr, fsr);
 		show_pte(tsk->mm, addr);
 		show_regs(regs);
+#endif
 	}
 #endif
 
@@ -319,11 +334,8 @@ retry:
 	 * signal first. We do not need to release the mmap_sem because
 	 * it would already be released in __lock_page_or_retry in
 	 * mm/filemap.c. */
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
-		if (!user_mode(regs))
-			goto no_context;
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 		return 0;
-	}
 
 	/*
 	 * Major/minor page fault accounting is only done on the

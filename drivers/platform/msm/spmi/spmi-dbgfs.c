@@ -46,12 +46,6 @@
 static const char *DFS_ROOT_NAME	= "spmi";
 static const mode_t DFS_MODE = S_IRUSR | S_IWUSR;
 
-#ifndef CONFIG_MSM_SPMI_DEBUGFS_RO
-static const mode_t DFS_DATA_MODE = S_IRUSR | S_IWUSR;
-#else
-static const mode_t DFS_DATA_MODE = S_IRUSR;
-#endif
-
 /* Log buffer */
 struct spmi_log_buffer {
 	size_t rpos;	/* Current 'read' position in buffer */
@@ -250,7 +244,6 @@ done:
 	return ret;
 }
 
-#ifndef CONFIG_MSM_SPMI_DEBUGFS_RO
 /**
  * spmi_write_data: writes data across the SPMI bus
  * @ctrl: The SPMI controller
@@ -287,7 +280,6 @@ spmi_write_data(struct spmi_controller *ctrl, uint8_t *buf, int offset, int cnt)
 done:
 	return ret;
 }
-#endif
 
 /**
  * print_to_log: format a string and place into the log buffer
@@ -467,7 +459,6 @@ static int get_log_data(struct spmi_trans *trans)
 	return total_items_read;
 }
 
-#ifndef CONFIG_MSM_SPMI_DEBUGFS_RO
 /**
  * spmi_dfs_reg_write: write user's byte array (coded as string) over SPMI.
  * @file: file pointer
@@ -485,6 +476,7 @@ static ssize_t spmi_dfs_reg_write(struct file *file, const char __user *buf,
 	int cnt = 0;
 	u8  *values;
 	size_t ret = 0;
+
 	u32 offset;
 	char *kbuf;
 	struct spmi_trans *trans = file->private_data;
@@ -495,12 +487,12 @@ static ssize_t spmi_dfs_reg_write(struct file *file, const char __user *buf,
 	offset = trans->offset;
 
 	/* Make a copy of the user data */
+
 	kbuf = kmalloc(count + 1, GFP_KERNEL);
 	if (!kbuf) {
 		ret = -ENOMEM;
 		goto unlock_mutex;
 	}
-
 	ret = copy_from_user(kbuf, buf, count);
 	if (ret == count) {
 		pr_err("failed to copy data from user\n");
@@ -540,9 +532,6 @@ unlock_mutex:
 	mutex_unlock(&trans->spmi_dfs_lock);
 	return ret;
 }
-#else
-#define spmi_dfs_reg_write NULL
-#endif
 
 /**
  * spmi_dfs_reg_read: reads value(s) over SPMI and fill user's buffer a
@@ -702,14 +691,14 @@ int spmi_dfs_add_controller(struct spmi_controller *ctrl)
 		goto err_remove_fs;
 	}
 
-	file = debugfs_create_file("data", DFS_DATA_MODE, dir, ctrl_data,
+	file = debugfs_create_file("data", DFS_MODE, dir, ctrl_data,
 							&spmi_dfs_reg_fops);
 	if (!file) {
 		pr_err("error creating 'data' entry\n");
 		goto err_remove_fs;
 	}
 
-	file = debugfs_create_file("data_raw", DFS_DATA_MODE, dir, ctrl_data,
+	file = debugfs_create_file("data_raw", DFS_MODE, dir, ctrl_data,
 						&spmi_dfs_raw_data_fops);
 	if (!file) {
 		pr_err("error creating 'data' entry\n");

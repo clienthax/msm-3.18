@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015, 2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -15,6 +15,37 @@
 #include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/mdss_io_util.h>
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <linux/regulator/driver.h>
+#include <linux/hw_lcd_common.h>
+#include "mdss_dsi.h"
+#define ORISE_PANEL_NUM 3
+
+enum lcd_run_mode_enum{
+	LCD_RUN_MODE_INIT = 0,
+	LCD_RUN_MODE_FACTORY,
+	LCD_RUN_MODE_NORMAL,
+};
+extern char *saved_command_line;
+extern bool enable_PT_test;
+
+struct regulator {
+	struct device *dev;
+	struct list_head list;
+	unsigned int always_on:1;
+	unsigned int bypass:1;
+	int uA_load;
+	int min_uV;
+	int max_uV;
+	int enabled;
+	char *supply_name;
+	struct device_attribute dev_attr;
+	struct regulator_dev *rdev;
+	struct dentry *debugfs;
+};
+#endif
+#endif
 
 #define MAX_I2C_CMDS  16
 void dss_reg_w(struct dss_io_data *io, u32 offset, u32 value, u32 debug)
@@ -211,55 +242,78 @@ vreg_get_fail:
 } /* msm_dss_config_vreg */
 EXPORT_SYMBOL(msm_dss_config_vreg);
 
-int msm_dss_config_vreg_opt_mode(struct dss_vreg *in_vreg, int num_vreg,
-				 enum dss_vreg_mode mode)
+/* a requirement about the production line test the leaky current of LCD  */
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+static bool huawei_lcd_is_factory_mode(void)
 {
-	int i = 0, rc = 0;
-
-	if (mode >= DSS_REG_MODE_MAX) {
-		pr_err("%pS->%s: invalid mode %d\n",
-			 __builtin_return_address(0), __func__, mode);
-		rc = -EINVAL;
-		goto error;
+	static enum lcd_run_mode_enum lcd_run_mode = LCD_RUN_MODE_INIT;
+	if(LCD_RUN_MODE_INIT == lcd_run_mode)
+	{
+		lcd_run_mode = LCD_RUN_MODE_NORMAL;
+		if(saved_command_line != NULL)
+		{
+			if(strstr(saved_command_line, "androidboot.huawei_swtype=factory") != NULL)
+			{
+				lcd_run_mode = LCD_RUN_MODE_FACTORY;
+			}
+		}
+		pr_warn("%s lcd run mode is %d\n", __func__, lcd_run_mode);
 	}
 
-	for (i = 0; i < num_vreg; i++) {
-		rc = PTR_RET(in_vreg[i].vreg);
-		if (rc) {
-			DEV_ERR("%pS->%s: %s regulator error. rc=%d\n",
-				__builtin_return_address(0), __func__,
-				in_vreg[i].vreg_name, rc);
-			goto error;
-		}
-
-		DEV_DBG("%s: Setting optimum mode %d for %s (load=%d)\n",
-			__func__, mode, in_vreg[i].vreg_name,
-			in_vreg[i].load[mode]);
-		rc = regulator_set_optimum_mode(in_vreg[i].vreg,
-					in_vreg[i].load[mode]);
-		if (rc < 0) {
-			DEV_ERR("%pS->%s: %s set opt mode failed. rc=%d\n",
-				__builtin_return_address(0), __func__,
-				in_vreg[i].vreg_name, rc);
-			goto error;
-		} else {
-			/*
-			 * regulator_set_optimum_mode can return non-zero
-			 * value for success. However, this API is expected
-			 * to return 0 for success.
-			 */
-			rc = 0;
-		}
+	if(LCD_RUN_MODE_FACTORY == lcd_run_mode)
+	{
+		return 1;
 	}
-
-error:
-	return rc;
+	else
+	{
+		return 0;
+	}
 }
-EXPORT_SYMBOL(msm_dss_config_vreg_opt_mode);
+extern struct mdss_panel_data *global_pdata;
+extern const char *default_panel_name;
+static const char  *lcdtype[] = {"BOE_OTM1906C_5P5_1080P_CMD",
+								"CTC_OTM1906C_5P5_1080P_CMD",
+								"TIANMA_OTM1906C_5P5_1080P_CMD"};
 
+static bool lcd_is_orise_panel(void)
+{
+	int i=0;
+	for(i=0; i<ORISE_PANEL_NUM; i++)
+	{
+		if(!strcmp(default_panel_name,lcdtype[i]))
+		{
+			LCD_LOG_INFO("%s,panel IC is ORISE\n",__func__);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static bool is_default_lcd(void)
+{
+	if(default_panel_name == NULL)
+	{
+		LCD_LOG_ERR("The point of panel name is NULL!");
+		return false;
+	}
+	if (!strncmp(default_panel_name,"truly 1080p video mode dsi panel",strlen(default_panel_name)))
+	{
+		return true;
+	}
+
+	return false;
+}
+#endif
+#endif
 int msm_dss_enable_vreg(struct dss_vreg *in_vreg, int num_vreg, int enable)
 {
 	int i = 0, rc = 0;
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	int is_orise_panel = 0;
+#endif
+#endif
 	bool need_sleep;
 	if (enable) {
 		for (i = 0; i < num_vreg; i++) {
@@ -270,12 +324,40 @@ int msm_dss_enable_vreg(struct dss_vreg *in_vreg, int num_vreg, int enable)
 					in_vreg[i].vreg_name, rc);
 				goto vreg_set_opt_mode_fail;
 			}
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+			if(!strcmp(in_vreg[i].vreg_name, "lab") )
+			{
+				if(lcd_is_orise_panel())
+				{
+					is_orise_panel = 1;
+				}
+				else
+				{
+					is_orise_panel = 0;
+				}
+				if( (!global_pdata->panel_info.cont_splash_enabled) && is_orise_panel)
+				{
+					mdss_dsi_panel_reset(global_pdata, 1);
+				}
+			}
+
+			if(!strcmp(in_vreg[i].vreg_name, "lab") || !strcmp(in_vreg[i].vreg_name, "ibb"))
+			{
+				if(is_default_lcd())
+				{
+					LCD_LOG_INFO("Bypass the LAB/IBB power on when the board is without lcd panel, current power is = %s!\n", in_vreg[i].vreg_name);
+					continue;
+				}
+			}
+#endif
+#endif
 			need_sleep = !regulator_is_enabled(in_vreg[i].vreg);
 			if (in_vreg[i].pre_on_sleep && need_sleep)
 				usleep_range(in_vreg[i].pre_on_sleep * 1000,
 					in_vreg[i].pre_on_sleep * 1000);
 			rc = regulator_set_optimum_mode(in_vreg[i].vreg,
-				in_vreg[i].load[DSS_REG_MODE_ENABLE]);
+				in_vreg[i].enable_load);
 			if (rc < 0) {
 				DEV_ERR("%pS->%s: %s set opt m fail\n",
 					__builtin_return_address(0), __func__,
@@ -295,15 +377,48 @@ int msm_dss_enable_vreg(struct dss_vreg *in_vreg, int num_vreg, int enable)
 		}
 	} else {
 		for (i = num_vreg-1; i >= 0; i--) {
+#ifndef CONFIG_LCDKIT_DRIVER
+			if(huawei_lcd_is_factory_mode())
+			{
+				if(enable_PT_test)
+					{
+						if(!strcmp(in_vreg[i].vreg_name, "lab") || !strcmp(in_vreg[i].vreg_name, "ibb"))
+							{
+								LCD_LOG_INFO("enter PT test,enable LAB/IBB power,current power is %s\n",in_vreg[i].vreg_name);
+								continue;
+							}
+					}
+
+				else
+					{
+						if(!strcmp(in_vreg[i].vreg_name, "lab") || !strcmp(in_vreg[i].vreg_name, "ibb"))
+							{
+								if(in_vreg[i].vreg->rdev->use_count> 1)
+									{
+										LCD_LOG_INFO("Exit PT test,disable LAB/IBB power\n");
+										in_vreg[i].vreg->rdev->use_count = 1;
+									}
+							}
+					}
+			}
+
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+			if(!strcmp(in_vreg[i].vreg_name, "lab") || !strcmp(in_vreg[i].vreg_name, "ibb"))
+			{
+				if(is_default_lcd())
+				{
+					LCD_LOG_INFO("Bypass the LAB/IBB power off when the board is without lcd panel, current power is = %s!\n", in_vreg[i].vreg_name);
+					continue;
+				}
+			}
+#endif
+#endif
 			if (in_vreg[i].pre_off_sleep)
 				usleep_range(in_vreg[i].pre_off_sleep * 1000,
 					in_vreg[i].pre_off_sleep * 1000);
 			regulator_set_optimum_mode(in_vreg[i].vreg,
-				in_vreg[i].load[DSS_REG_MODE_DISABLE]);
-
-			if (regulator_is_enabled(in_vreg[i].vreg))
-				regulator_disable(in_vreg[i].vreg);
-
+				in_vreg[i].disable_load);
+			regulator_disable(in_vreg[i].vreg);
 			if (in_vreg[i].post_off_sleep)
 				usleep_range(in_vreg[i].post_off_sleep * 1000,
 					in_vreg[i].post_off_sleep * 1000);
@@ -312,8 +427,7 @@ int msm_dss_enable_vreg(struct dss_vreg *in_vreg, int num_vreg, int enable)
 	return rc;
 
 disable_vreg:
-	regulator_set_optimum_mode(in_vreg[i].vreg,
-					in_vreg[i].load[DSS_REG_MODE_DISABLE]);
+	regulator_set_optimum_mode(in_vreg[i].vreg, in_vreg[i].disable_load);
 
 vreg_set_opt_mode_fail:
 	for (i--; i >= 0; i--) {
@@ -321,7 +435,7 @@ vreg_set_opt_mode_fail:
 			usleep_range(in_vreg[i].pre_off_sleep * 1000,
 				in_vreg[i].pre_off_sleep * 1000);
 		regulator_set_optimum_mode(in_vreg[i].vreg,
-			in_vreg[i].load[DSS_REG_MODE_DISABLE]);
+			in_vreg[i].disable_load);
 		regulator_disable(in_vreg[i].vreg);
 		if (in_vreg[i].post_off_sleep)
 			usleep_range(in_vreg[i].post_off_sleep * 1000,

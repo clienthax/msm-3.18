@@ -1093,7 +1093,7 @@ enum {
 #define MDSS_PP_SPLIT_RIGHT_ONLY	0x20000000
 #define MDSS_PP_SPLIT_MASK		0x30000000
 
-#define MDSS_MAX_BL_BRIGHTNESS 255
+#define MDSS_MAX_BL_BRIGHTNESS 4095
 #define AD_BL_LIN_LEN 256
 #define AD_BL_ATT_LUT_LEN 33
 
@@ -1334,6 +1334,14 @@ struct mdp_page_protection {
 	uint32_t page_protection;
 };
 
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+enum inversion_mode {
+	COLUMN_INVERSION = 0,
+	DOT_INVERSION = 2,
+};
+#endif
+#endif
 
 struct mdp_mixer_info {
 	int pndx;
@@ -1368,20 +1376,11 @@ enum {
 	MDP_WRITEBACK_MIRROR_RESUME,
 };
 
-/*
- * The enum values are continued below as preprocessor macro definitions
- */
 enum mdp_color_space {
 	MDP_CSC_ITU_R_601,
 	MDP_CSC_ITU_R_601_FR,
 	MDP_CSC_ITU_R_709,
 };
-
-/*
- * These definitions are a continuation of the mdp_color_space enum above
- */
-#define MDP_CSC_ITU_R_2020	(MDP_CSC_ITU_R_709 + 1)
-#define MDP_CSC_ITU_R_2020_FR	(MDP_CSC_ITU_R_2020 + 1)
 
 enum {
 	mdp_igc_v1_7 = 1,

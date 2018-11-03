@@ -2,7 +2,7 @@
  * drivers/serial/msm_serial.c - driver for msm7k serial device and console
  *
  * Copyright (C) 2007 Google, Inc.
- * Copyright (c) 2010-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2015, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -554,7 +554,6 @@ static void handle_rx(struct uart_port *port, unsigned int misr)
 	unsigned int vid;
 	unsigned int sr;
 	int count = 0;
-	int copied = 0;
 	struct msm_hsl_port *msm_hsl_port = UART_TO_MSM(port);
 
 	vid = msm_hsl_port->ver_id;
@@ -610,9 +609,9 @@ static void handle_rx(struct uart_port *port, unsigned int misr)
 
 		/* TODO: handle sysrq */
 		/* if (!uart_handle_sysrq_char(port, c)) */
-		copied = tty_insert_flip_string(tty->port, (char *) &c,
+		tty_insert_flip_string(tty->port, (char *) &c,
 				       (count > 4) ? 4 : count);
-		count -= copied;
+		count -= 4;
 	}
 
 	tty_flip_buffer_push(tty->port);
@@ -1424,6 +1423,19 @@ static inline void wait_for_xmitr(struct uart_port *port)
 }
 
 #ifdef CONFIG_SERIAL_MSM_HSL_CONSOLE
+extern char *saved_command_line;
+static bool is_serial_log_enabled(void)
+{
+	if (strstr(saved_command_line, "console=ttyHSL0,115200,n8") != NULL) {
+		pr_info("serial log enable \n");
+		return true;
+	}
+
+	pr_info("serial log disable \n");
+
+	return false;
+}
+
 static void msm_hsl_console_putchar(struct uart_port *port, int ch)
 {
 	unsigned int vid = UART_TO_MSM(port)->ver_id;
@@ -1728,6 +1740,14 @@ static int msm_serial_hsl_probe(struct platform_device *pdev)
 		return -ENXIO;
 
 	pr_info("detected port #%d (ttyHSL%d)\n", pdev->id, line);
+
+#ifdef CONFIG_SERIAL_MSM_HSL_CONSOLE
+	/* Port 0(uart 2) used for console. */
+	if (!is_serial_log_enabled() && 0 == pdev->id) {
+		pr_info("serial console disabled, do not register ttyHSL0.\n");
+		return -ENODEV;
+	}
+#endif
 
 	port = get_port_from_line(line);
 	port->dev = &pdev->dev;

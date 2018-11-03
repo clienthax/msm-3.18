@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2015, 2017 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -629,13 +629,6 @@ void rmnet_config_netlink_msg_handler(struct sk_buff *skb)
 						rmnet_header->vnd.vnd_name);
 		break;
 
-	case RMNET_NETLINK_NEW_VND_WITH_NAME:
-		resp_rmnet->crd = RMNET_NETLINK_MSG_RETURNCODE;
-		resp_rmnet->return_code = rmnet_create_vnd_name(
-						rmnet_header->vnd.id,
-						rmnet_header->vnd.vnd_name);
-		break;
-
 	case RMNET_NETLINK_FREE_VND:
 		resp_rmnet->crd = RMNET_NETLINK_MSG_RETURNCODE;
 		/* Please check rmnet_vnd_free_dev documentation regarding
@@ -1077,11 +1070,11 @@ int rmnet_create_vnd(int id)
 	struct net_device *dev;
 	ASSERT_RTNL();
 	LOGL("(%d);", id);
-	return rmnet_vnd_create_dev(id, &dev, NULL, 0);
+	return rmnet_vnd_create_dev(id, &dev, NULL);
 }
 
 /**
- * rmnet_create_vnd_prefix() - Create virtual network device node
+ * rmnet_create_vnd() - Create virtual network device node
  * @id:       RmNet virtual device node id
  * @prefix:   String prefix for device name
  *
@@ -1093,24 +1086,7 @@ int rmnet_create_vnd_prefix(int id, const char *prefix)
 	struct net_device *dev;
 	ASSERT_RTNL();
 	LOGL("(%d, \"%s\");", id, prefix);
-	return rmnet_vnd_create_dev(id, &dev, prefix, 0);
-}
-
-/**
- * rmnet_create_vnd_name() - Create virtual network device node
- * @id:       RmNet virtual device node id
- * @prefix:   String prefix for device name
- *
- * Return:
- *      - result of rmnet_vnd_create_dev()
- */
-int rmnet_create_vnd_name(int id, const char *name)
-{
-	struct net_device *dev;
-
-	ASSERT_RTNL();
-	LOGL("(%d, \"%s\");", id, name);
-	return rmnet_vnd_create_dev(id, &dev, name, 1);
+	return rmnet_vnd_create_dev(id, &dev, prefix);
 }
 
 /**
@@ -1147,7 +1123,6 @@ static void rmnet_force_unassociate_device(struct net_device *dev)
 {
 	int i, j;
 	struct net_device *vndev;
-	struct rmnet_phys_ep_conf_s *config;
 	struct rmnet_logical_ep_conf_s *cfg;
 	struct rmnet_free_vnd_work *vnd_work;
 	ASSERT_RTNL();
@@ -1203,16 +1178,6 @@ static void rmnet_force_unassociate_device(struct net_device *dev)
 		kfree(vnd_work);
 	}
 
-	config = _rmnet_get_phys_ep_config(dev);
-
-	if (config) {
-		cfg = &config->local_ep;
-
-		if (cfg && cfg->refcount)
-			rmnet_unset_logical_endpoint_config
-			(cfg->egress_dev, RMNET_LOCAL_LOGICAL_ENDPOINT);
-	}
-
 	/* Clear the mappings on the phys ep */
 	trace_rmnet_unregister_cb_clear_lepcs(dev);
 	rmnet_unset_logical_endpoint_config(dev, RMNET_LOCAL_LOGICAL_ENDPOINT);
@@ -1244,9 +1209,16 @@ int rmnet_config_notify_cb(struct notifier_block *nb,
 	case NETDEV_UNREGISTER_FINAL:
 	case NETDEV_UNREGISTER:
 		trace_rmnet_unregister_cb_entry(dev);
+#ifdef CONFIG_HUAWEI_WIFI
+		LOGH("Kernel is trying to unregister %s, event = %lu", dev->name, event);
+#else
 		LOGH("Kernel is trying to unregister %s", dev->name);
+#endif
 		rmnet_force_unassociate_device(dev);
 		trace_rmnet_unregister_cb_exit(dev);
+#ifdef CONFIG_HUAWEI_WIFI
+		LOGH("Kernel is unregistered %s, %lu", dev->name, event);
+#endif
 		break;
 
 	default:

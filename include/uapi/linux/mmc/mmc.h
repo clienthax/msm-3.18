@@ -49,6 +49,10 @@
 #define MMC_CLR_WRITE_PROT       29   /* ac   [31:0] data addr   R1b */
 #define MMC_SEND_WRITE_PROT      30   /* adtc [31:0] wpdata addr R1  */
 
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+#define MMC_SEND_WRITE_PROT_TYPE 31   /* adtc [31:0] wpdata addr R1  */
+#endif
+
   /* class 5 */
 #define MMC_ERASE_GROUP_START    35   /* ac   [31:0] data addr   R1  */
 #define MMC_ERASE_GROUP_END      36   /* ac   [31:0] data addr   R1  */
@@ -64,11 +68,5 @@
   /* class 8 */
 #define MMC_APP_CMD              55   /* ac   [31:16] RCA        R1  */
 #define MMC_GEN_CMD              56   /* adtc [0] RD/WR          R1  */
-
-  /* class 11 */
-#define MMC_CMDQ_TASK_PARAM	 44   /* ac			 R1  */
-#define MMC_CMDQ_TASK_ADDR	 45   /* ac   [31:0] blk addr    R1  */
-#define MMC_CMDQ_READ_TASK	 46   /* adtc [20:16] Task ID    R1  */
-#define MMC_CMDQ_WRITE_TASK	 47   /* adtc [20:16] Task ID    R1  */
 
 #endif /* UAPI_MMC_MMC_H */

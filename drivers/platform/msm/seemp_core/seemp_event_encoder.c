@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -111,7 +111,7 @@ void encode_seemp_params(struct seemp_logk_blk *blk)
 			}
 		}
 
-		msg_section_start = blk->payload.msg + (section_start -
+		msg_section_start = blk->payload.msg + (section_sta rt -
 				tmp.payload.msg);
 		msg_section_eq = blk->payload.msg + (section_eq -
 				tmp.payload.msg);

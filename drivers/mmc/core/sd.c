@@ -27,6 +27,35 @@
 #include "sd.h"
 #include "sd_ops.h"
 
+#ifdef CONFIG_MMC_PASSWORDS
+#include "lock.h"
+#endif
+
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+static unsigned int g_sd_speed_class = 0;
+#endif
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+#include <linux/mmc/dsm_sdcard.h>
+u32 sd_manfid;
+struct dsm_sdcard_cmd_log dsm_sdcard_cmd_logs[] =
+{
+	{"CMD8 : ",				0,		0},
+	{"CMD55 : ",    		0,		0},
+	{"ACMD41: ",			0,		0},
+	{"CMD2_RESP0 : ",		0,		0},
+	{"CMD2_RESP1 : ",		0,		0},
+	{"CMD2_RESP2 : ",		0,		0},
+	{"CMD2_RESP3 : ",		0,		0},
+	{"CMD3 : ",				0,		0},
+	{"CMD9_RESP0 : ",		0,		0},
+	{"CMD9_RESP1 : ",		0,		0},
+	{"CMD9_RESP2 : ",		0,		0},
+	{"CMD9_RESP3 : ",		0,		0},
+	{"CMD7 : ",				0,		0},
+	{"Report Uevent : ",	0,		0},
+};
+#endif
 #define UHS_SDR104_MIN_DTR	(100 * 1000 * 1000)
 #define UHS_DDR50_MIN_DTR	(50 * 1000 * 1000)
 #define UHS_SDR50_MIN_DTR	(50 * 1000 * 1000)
@@ -170,6 +199,16 @@ static int mmc_decode_csd(struct mmc_card *card)
 		m = UNSTUFF_BITS(resp, 48, 22);
 		csd->capacity     = (1 + m) << 10;
 
+		/*
+		 * Bit 12 - temporary write protection
+		 * Bit 13 - permanent write protection
+		 * while do sd card detection, check sd wite protection attribute
+		 */
+		if (UNSTUFF_BITS(resp, 12, 1) || UNSTUFF_BITS(resp, 13, 1)) {
+			pr_info("%s, SD is on write protection status\n", mmc_hostname(card->host));
+			mmc_card_set_readonly(card);
+		}
+
 		csd->read_blkbits = 9;
 		csd->read_partial = 0;
 		csd->write_misalign = 0;
@@ -255,6 +294,11 @@ static int mmc_read_ssr(struct mmc_card *card)
 	for (i = 0; i < 16; i++)
 		ssr[i] = be32_to_cpu(ssr[i]);
 
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+    g_sd_speed_class = UNSTUFF_BITS(ssr, 440 - 384, 8);
+#endif
+	card->ssr.speed_class = UNSTUFF_BITS(ssr, 440 - 384, 8);
+
 	/*
 	 * UNSTUFF_BITS only works with four u32s so we have to offset the
 	 * bitfield positions accordingly.
@@ -331,12 +375,38 @@ static int mmc_read_switch(struct mmc_card *card)
 	if (status[13] & SD_MODE_HIGH_SPEED)
 		card->sw_caps.hs_max_dtr = HIGH_SPEED_MAX_DTR;
 
+#ifdef CONFIG_HUAWEI_KERNEL
 	if (card->scr.sda_spec3) {
 		card->sw_caps.sd3_bus_mode = status[13];
 		/* Driver Strengths supported by the card */
 		card->sw_caps.sd3_drv_type = status[9];
-		card->sw_caps.sd3_curr_limit = status[7] | status[6] << 8;
+		pr_err("%s: card support %s %s %s %s %s\n",
+			mmc_hostname(card->host),
+			(card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR12 ? "SDR12":""),
+			(card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR25 ? "SDR25":""),
+			(card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR50 ? "SDR50":""),
+			(card->sw_caps.sd3_bus_mode & SD_MODE_UHS_DDR50 ? "DDR50":""),
+			(card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR104 ? "SDR104":""));
+		pr_err("%s: card driver %s %s %s %s\n",
+			mmc_hostname(card->host),
+			(card->sw_caps.sd3_drv_type & SD_DRIVER_TYPE_A ? "TYPE_A":""),
+			(card->sw_caps.sd3_drv_type & SD_DRIVER_TYPE_B ? "TYPE_B":""),
+			(card->sw_caps.sd3_drv_type & SD_DRIVER_TYPE_C ? "TYPE_C":""),
+			(card->sw_caps.sd3_drv_type & SD_DRIVER_TYPE_D ? "TYPE_D":""));
 	}
+	else
+	{
+		pr_err(KERN_ERR "%s: card not support spec3\n",mmc_hostname(card->host));
+	}
+
+
+#else
+	if (card->scr.sda_spec3) {
+		card->sw_caps.sd3_bus_mode = status[13];
+		/* Driver Strengths supported by the card */
+		card->sw_caps.sd3_drv_type = status[9];
+	}
+#endif
 
 out:
 	kfree(status);
@@ -463,8 +533,20 @@ static void sd_update_bus_speed_mode(struct mmc_card *card)
 	 */
 	if (!mmc_host_uhs(card->host)) {
 		card->sd_bus_speed = 0;
+#ifdef CONFIG_HUAWEI_KERNEL
+		pr_err("%s: host do not support uhs-1.\n", mmc_hostname(card->host));
+#endif
 		return;
 	}
+#ifdef CONFIG_HUAWEI_KERNEL
+	pr_err("%s: host support %s %s %s %s %s\n",
+		mmc_hostname(card->host),
+		(card->host->caps & MMC_CAP_UHS_SDR12 ? "SDR12":""),
+		(card->host->caps & MMC_CAP_UHS_SDR25 ? "SDR25":""),
+		(card->host->caps & MMC_CAP_UHS_SDR50 ? "SDR50":""),
+		(card->host->caps & MMC_CAP_UHS_DDR50 ? "DDR50":""),
+		(card->host->caps & MMC_CAP_UHS_SDR104 ? "SDR104":""));
+#endif
 
 	if ((card->host->caps & MMC_CAP_UHS_SDR104) &&
 	    (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR104) &&
@@ -593,25 +675,14 @@ static int sd_set_current_limit(struct mmc_card *card, u8 *status)
 	 * when we set current limit to 200ma, the card will draw 200ma, and
 	 * when we set current limit to 400/600/800ma, the card will draw its
 	 * maximum 300ma from the host.
-	 *
-	 * The above is incorrect: if we try to set a current limit that is
-	 * not supported by the card, the card can rightfully error out the
-	 * attempt, and remain at the default current limit.  This results
-	 * in a 300mA card being limited to 200mA even though the host
-	 * supports 800mA. Failures seen with SanDisk 8GB UHS cards with
-	 * an iMX6 host. --rmk
 	 */
-	if (max_current >= 800 &&
-	    card->sw_caps.sd3_curr_limit & SD_MAX_CURRENT_800)
+	if (max_current >= 800)
 		current_limit = SD_SET_CURRENT_LIMIT_800;
-	else if (max_current >= 600 &&
-		 card->sw_caps.sd3_curr_limit & SD_MAX_CURRENT_600)
+	else if (max_current >= 600)
 		current_limit = SD_SET_CURRENT_LIMIT_600;
-	else if (max_current >= 400 &&
-		 card->sw_caps.sd3_curr_limit & SD_MAX_CURRENT_400)
+	else if (max_current >= 400)
 		current_limit = SD_SET_CURRENT_LIMIT_400;
-	else if (max_current >= 200 &&
-		 card->sw_caps.sd3_curr_limit & SD_MAX_CURRENT_200)
+	else if (max_current >= 200)
 		current_limit = SD_SET_CURRENT_LIMIT_200;
 
 	if (current_limit != SD_SET_CURRENT_NO_CHANGE) {
@@ -689,7 +760,11 @@ out:
 /*
  * UHS-I specific initialization procedure
  */
+#ifdef CONFIG_MMC_PASSWORDS
+int mmc_sd_init_uhs_card(struct mmc_card *card)
+#else
 static int mmc_sd_init_uhs_card(struct mmc_card *card)
+#endif
 {
 	int err;
 	u8 *status;
@@ -742,10 +817,15 @@ static int mmc_sd_init_uhs_card(struct mmc_card *card)
 	 * SPI mode doesn't define CMD19 and tuning is only valid for SDR50 and
 	 * SDR104 mode SD-cards. Note that tuning is mandatory for SDR104.
 	 */
-	if (!mmc_host_is_spi(card->host) &&
-	    (card->sd_bus_speed == UHS_SDR50_BUS_SPEED ||
-	     card->sd_bus_speed == UHS_SDR104_BUS_SPEED))
-		err = mmc_execute_tuning(card);
+	if (!mmc_host_is_spi(card->host) && card->host->ops->execute_tuning &&
+			(card->sd_bus_speed == UHS_SDR50_BUS_SPEED ||
+			 card->sd_bus_speed == UHS_SDR104_BUS_SPEED)) {
+		mmc_host_clk_hold(card->host);
+		err = card->host->ops->execute_tuning(card->host,
+						      MMC_SEND_TUNING_BLOCK);
+		mmc_host_clk_release(card->host);
+	}
+
 out:
 	kfree(status);
 
@@ -766,6 +846,8 @@ MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
 MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
 MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
+MMC_DEV_ATTR(speed_class, "0x%08x\n", card->ssr.speed_class);
+MMC_DEV_ATTR(state, "0x%08x\n", card->state);
 
 
 static struct attribute *sd_std_attrs[] = {
@@ -781,6 +863,8 @@ static struct attribute *sd_std_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_oemid.attr,
 	&dev_attr_serial.attr,
+	&dev_attr_speed_class.attr,
+	&dev_attr_state.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(sd_std);
@@ -789,6 +873,31 @@ struct device_type sd_type = {
 	.groups = sd_std_groups,
 };
 
+#ifdef CONFIG_MMC_PASSWORDS
+/*
+ * Adds sysfs entries as relevant.
+ */
+static int mmc_sd_sysfs_add(struct mmc_host *host, struct mmc_card *card)
+{
+	int ret;
+
+	ret = mmc_lock_add_sysfs(card);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return 0;
+}
+
+/*
+ * Removes the sysfs entries added by mmc_sysfs_add().
+ */
+static void mmc_sd_sysfs_remove(struct mmc_host *host, struct mmc_card *card)
+{
+	mmc_lock_remove_sysfs(card);
+}
+#endif
+
 /*
  * Fetch CID from card.
  */
@@ -796,7 +905,12 @@ int mmc_sd_get_cid(struct mmc_host *host, u32 ocr, u32 *cid, u32 *rocr)
 {
 	int err;
 	u32 max_current;
-	int retries = 10;
+
+	/*
+	 * change retry time from 10 to 5,to avoid suspend or resume 12s
+	 * timeout panic,especially bad card
+	 */
+	int retries = 5;
 	u32 pocr = ocr;
 
 try_again:
@@ -820,8 +934,17 @@ try_again:
 	 * block-addressed SDHC cards.
 	 */
 	err = mmc_send_if_cond(host, ocr);
+#ifdef CONFIG_HUAWEI_KERNEL
+	if (!err)
+	{
+		ocr |= SD_OCR_CCS;
+		pr_err("%s: sd card support SDHC or later \n", mmc_hostname(host));
+	}
+#else
 	if (!err)
 		ocr |= SD_OCR_CCS;
+#endif
+
 
 	/*
 	 * If the host supports one of UHS-I modes, request the card
@@ -840,8 +963,24 @@ try_again:
 		ocr |= SD_OCR_XPC;
 
 	err = mmc_send_app_op_cond(host, ocr, rocr);
+#ifdef CONFIG_HUAWEI_KERNEL
+	if (err)
+	{
+		pr_err("%s: send acmd41 to get ocr fail, err=%d\n", mmc_hostname(host), err);
+		return err;
+	}
+	if(rocr)
+	{
+		pr_err("%s: send acmd41 with ocr:0x%x, get rocr:0x%x\n", mmc_hostname(host), ocr, *rocr);
+	}
+	else
+	{
+		pr_err("%s: send acmd41 with ocr:0x%x\n", mmc_hostname(host), ocr);
+	}
+#else
 	if (err)
 		return err;
+#endif
 
 	/*
 	 * In case CCS and S18A in the response is set, start Signal Voltage
@@ -849,6 +988,9 @@ try_again:
 	 */
 	if (!mmc_host_is_spi(host) && rocr &&
 	   ((*rocr & 0x41000000) == 0x41000000)) {
+#ifdef CONFIG_HUAWEI_KERNEL
+		pr_err("%s: sd card support uhs-1, and accept 1.8V switching request.\n", mmc_hostname(host));
+#endif
 		err = mmc_set_signal_voltage(host, MMC_SIGNAL_VOLTAGE_180,
 					pocr);
 		if (err == -EAGAIN) {
@@ -872,6 +1014,11 @@ int mmc_sd_get_csd(struct mmc_host *host, struct mmc_card *card)
 {
 	int err;
 
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	int buff_len;
+	char *log_buff;
+#endif
+
 	/*
 	 * Fetch CSD from card.
 	 */
@@ -880,8 +1027,32 @@ int mmc_sd_get_csd(struct mmc_host *host, struct mmc_card *card)
 		return err;
 
 	err = mmc_decode_csd(card);
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	if(!strcmp(mmc_hostname(host), "mmc1"))
+	{
+		 dsm_sdcard_cmd_logs[DSM_SDCARD_CMD9_R0].value = card->raw_csd[0];
+		 dsm_sdcard_cmd_logs[DSM_SDCARD_CMD9_R1].value = card->raw_csd[1];
+		 dsm_sdcard_cmd_logs[DSM_SDCARD_CMD9_R2].value = card->raw_csd[2];
+		 dsm_sdcard_cmd_logs[DSM_SDCARD_CMD9_R3].value = card->raw_csd[3];
+	}
+
+	if (err)
+	{
+		if(-ENOMEDIUM != err && -ETIMEDOUT != err
+		&& !strcmp(mmc_hostname(host), "mmc1") && !dsm_client_ocuppy(sdcard_dclient))
+		{
+			log_buff = dsm_sdcard_get_log(DSM_SDCARD_CMD9_R3,err);
+			buff_len = strlen(log_buff);
+			dsm_client_copy(sdcard_dclient,log_buff,buff_len + 1);
+			dsm_client_notify(sdcard_dclient, DSM_SDCARD_CMD9_RESP_ERR);
+		}
+		return err;
+	}
+#else
 	if (err)
 		return err;
+#endif
 
 	return 0;
 }
@@ -899,8 +1070,16 @@ int mmc_sd_setup_card(struct mmc_host *host, struct mmc_card *card,
 		 * Fetch SCR from card.
 		 */
 		err = mmc_app_send_scr(card, card->raw_scr);
+#ifdef CONFIG_HUAWEI_KERNEL
+		if (err)
+		{
+			pr_err("%s: send acmd51 to get scr fail when init sd first time, err=%d, please check data0!!!!\n", mmc_hostname(host), err);
+			return err;
+		}
+#else
 		if (err)
 			return err;
+#endif
 
 		err = mmc_decode_scr(card);
 		if (err)
@@ -910,8 +1089,16 @@ int mmc_sd_setup_card(struct mmc_host *host, struct mmc_card *card,
 		 * Fetch and process SD Status register.
 		 */
 		err = mmc_read_ssr(card);
+#ifdef CONFIG_HUAWEI_KERNEL
+		if (err)
+		{
+			pr_err("%s: send cmd13 to get ssr fail when init sd first time, err=%d.\n", mmc_hostname(host), err);
+			return err;
+		}
+#else
 		if (err)
 			return err;
+#endif
 
 		/* Erase init depends on CSD and SSR */
 		mmc_init_erase(card);
@@ -939,8 +1126,16 @@ int mmc_sd_setup_card(struct mmc_host *host, struct mmc_card *card,
 		err = mmc_read_switch(card);
 #endif
 
+#ifdef CONFIG_HUAWEI_KERNEL
+		if (err)
+		{
+			pr_err("%s: send cmd6 fail when init sd first time, err=%d.\n", mmc_hostname(host), err);
+			return err;
+		}
+#else
 		if (err)
 			return err;
+#endif
 	}
 
 	/*
@@ -995,30 +1190,69 @@ unsigned mmc_sd_get_max_clock(struct mmc_card *card)
 	return max_dtr;
 }
 
+#ifdef CONFIG_MMC_PASSWORDS
+void mmc_sd_go_highspeed(struct mmc_card *card)
+{
+	//mmc_card_set_highspeed(card);//temp remove this
+	mmc_set_timing(card->host, MMC_TIMING_SD_HS);
+}
+#endif
+
 /*
  * Handle the detection and initialisation of a card.
  *
  * In the case of a resume, "oldcard" will contain the card
  * we're trying to reinitialise.
  */
+#ifdef CONFIG_MMC_PASSWORDS
+int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
+	struct mmc_card *oldcard)
+#else
 static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	struct mmc_card *oldcard)
+#endif
 {
 	struct mmc_card *card;
 	int err;
 	u32 cid[4];
 	u32 rocr = 0;
 
+#ifdef CONFIG_MMC_PASSWORDS
+	u32 status = 0;
+#endif
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	int i=0;
+#endif
+
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
 
 	err = mmc_sd_get_cid(host, ocr, cid, &rocr);
+#ifdef CONFIG_HUAWEI_KERNEL
+	if (host && err)
+	{
+		pr_err("%s: send cmd2 to get cid fail, err=%d\n", mmc_hostname(host), err);
+		return err;
+	}
+#else
 	if (err)
 		return err;
+#endif
 
 	if (oldcard) {
+#ifdef CONFIG_HUAWEI_KERNEL
+		if ((memcmp(cid, oldcard->raw_cid, sizeof(cid)) != 0) && host)
+		{
+			pr_err("%s: new cid don't match old cid in resume!!\n", mmc_hostname(host));
+			pr_err("%s: new cid:0x%08x,%08x,%08x,%08x\n", mmc_hostname(host), cid[0], cid[1], cid[2], cid[3]);
+			pr_err("%s: old cid:0x%08x,%08x,%08x,%08x\n", mmc_hostname(host), oldcard->raw_cid[0], oldcard->raw_cid[1], oldcard->raw_cid[2], oldcard->raw_cid[3]);
+			return -ENOENT;
+		}
+#else
 		if (memcmp(cid, oldcard->raw_cid, sizeof(cid)) != 0)
 			return -ENOENT;
+#endif
 
 		card = oldcard;
 	} else {
@@ -1027,12 +1261,28 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		 */
 		card = mmc_alloc_card(host, &sd_type);
 		if (IS_ERR(card))
+		{
+			if(host)
+				pr_err("%s: mmc_alloc_card failed.\n", mmc_hostname(host));
 			return PTR_ERR(card);
+		}
+
 
 		card->ocr = ocr;
 		card->type = MMC_TYPE_SD;
 		memcpy(card->raw_cid, cid, sizeof(card->raw_cid));
 	}
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	sd_manfid = cid[0]>>24;
+	if(!strcmp(mmc_hostname(host), "mmc1"))
+	{
+		for(i=0; i< DSM_SDCARD_CMD_MAX; i++)
+		{
+			dsm_sdcard_cmd_logs[i].manfid = sd_manfid;
+		}
+	}
+#endif
 
 	/*
 	 * For native busses:  get card RCA and quit open drain mode.
@@ -1040,14 +1290,58 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	if (!mmc_host_is_spi(host)) {
 		err = mmc_send_relative_addr(host, &card->rca);
 		if (err)
+		{
+#ifdef CONFIG_HUAWEI_KERNEL
+			if(host)
+				pr_err("%s: send cmd3 to get RCA fail, err=%d\n", mmc_hostname(host), err);
+#endif
 			goto free_card;
+		}
 		host->card = card;
 	}
 
+#ifdef CONFIG_MMC_PASSWORDS
+    /* whether voltage switch just for sd card */
+	if (rocr & SD_ROCR_S18A)
+		card->swith_voltage = true;
+	else
+		card->swith_voltage = false;
+
+	printk("%s, sd card voltage swith(3.3v--> 1.8v) is %d\n", __func__, card->swith_voltage);
+
+	/*
+	 * Check if card is locked.
+	 */
+	err = mmc_send_status(card, &status);
+	if (err)
+		goto free_card;
+	if (status & R1_CARD_IS_LOCKED) {
+		mmc_card_set_encrypted(card);
+		mmc_card_set_locked(card);
+	}
+#endif
+
 	if (!oldcard) {
 		err = mmc_sd_get_csd(host, card);
+
+#ifdef CONFIG_HUAWEI_KERNEL
+		if (err && host)
+		{
+			/*
+			* send cmd9 to get csd information (e.g.block length, card capacity, etc)
+			*/
+			pr_err("%s: send cmd9 to get csd fail when init sd first time, err=%d\n", mmc_hostname(host), err);
+
+			goto free_card;
+		}
+		else if(!err && host)
+		{
+			pr_info("%s: get csd successful, clock is %dHz\n", mmc_hostname(host), card->csd.max_dtr);
+		}
+#else
 		if (err)
 			goto free_card;
+#endif
 
 		mmc_decode_cid(card);
 	}
@@ -1065,18 +1359,77 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	if (!mmc_host_is_spi(host)) {
 		err = mmc_select_card(card);
 		if (err)
+		{
+#ifdef CONFIG_HUAWEI_KERNEL
+			if(host)
+				pr_err("%s: send cmd7 to select sd fail, err=%d\n", mmc_hostname(host), err);
+#endif
 			goto free_card;
+		}
 	}
+#ifdef CONFIG_MMC_PASSWORDS
+	if (status & R1_CARD_IS_LOCKED) {
+		if (card->auto_unlock ) {
+			if (card->unlock_pwd[0] > 0 ) {
+				//unlock sd card
+				err = mmc_lock_unlock_by_buf(card,  card->unlock_pwd+1,(int)card->unlock_pwd[0], MMC_LOCK_MODE_UNLOCK);
+				if(err) {
+					printk("[SDLOCK] %s unlock failed \n",__func__);
+				} else {
+					printk("[SDLOCK] %s unlock success \n",__func__);
+
+					if(!mmc_card_locked(card)) {
+						card->auto_unlock = false;
+						printk("[SDLOCK] %s unlock success and sdcard status is unlocked.\n",__func__);
+					} else {
+						printk("[SDLOCK] %s unlock success but sdcard status is locked, abnormal status.\n",__func__);
+					}
+				}
+
+				//Check if card is locked
+				err = mmc_send_status(card, &status);
+				if (err) {
+					printk("[SDLOCK] %s resume sd card exception /n",__func__);
+					goto free_card;
+				}
+			} else {
+				printk("[SDLOCK] %s unlock password is null\n",__func__);
+			}
+		}
+
+		if (status & R1_CARD_IS_LOCKED) {
+			printk(KERN_WARNING "[SDLOCK] sdcard is locked\n");
+			host->card = card;
+			goto locked_card;
+		} else {
+			printk(KERN_WARNING "[SDLOCK] sdcard resume to unlocked\n");
+		}
+	} else {
+		printk(KERN_WARNING "[SDLOCK] sdcard is unlocked\n");
+	}
+#endif
 
 	err = mmc_sd_setup_card(host, card, oldcard != NULL);
 	if (err)
+	{
+#ifdef CONFIG_HUAWEI_KERNEL
+		if(host)
+			pr_err("%s: mmc_sd_setup_card fail.\n", mmc_hostname(host));
+#endif
 		goto free_card;
+	}
 
 	/* Initialization sequence for UHS-I cards */
 	if (rocr & SD_ROCR_S18A) {
 		err = mmc_sd_init_uhs_card(card);
 		if (err)
+		{
+#ifdef CONFIG_HUAWEI_KERNEL
+			if(host)
+				pr_err("%s: send cmd6 to uhs-1 sd fail, err=%d\n", mmc_hostname(host), err);
+#endif
 			goto free_card;
+		}
 	} else {
 		/*
 		 * Attempt to change to high-speed (if supported)
@@ -1085,7 +1438,13 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		if (err > 0)
 			mmc_set_timing(card->host, MMC_TIMING_SD_HS);
 		else if (err)
+		{
+#ifdef CONFIG_HUAWEI_KERNEL
+			if(host)
+				pr_err("%s: send cmd6 into high-speed mode fail(not uhs-1), err=%d\n", mmc_hostname(host), err);
+#endif
 			goto free_card;
+		}
 
 		/*
 		 * Set bus speed.
@@ -1099,7 +1458,13 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 			(card->scr.bus_widths & SD_SCR_BUS_WIDTH_4)) {
 			err = mmc_app_set_bus_width(card, MMC_BUS_WIDTH_4);
 			if (err)
+			{
+#ifdef CONFIG_HUAWEI_KERNEL
+				if(host)
+					pr_err("%s: send acmd6 into 4bit mode fail(not uhs-1), err=%d\n", mmc_hostname(host), err);
+#endif
 				goto free_card;
+			}
 
 			mmc_set_bus_width(host, MMC_BUS_WIDTH_4);
 		}
@@ -1108,6 +1473,9 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	card->clk_scaling_highest = mmc_sd_get_max_clock(card);
 	card->clk_scaling_lowest = host->f_min;
 
+#ifdef CONFIG_MMC_PASSWORDS
+locked_card:
+#endif
 	return 0;
 
 free_card:
@@ -1156,17 +1524,7 @@ static void mmc_sd_detect(struct mmc_host *host)
 	BUG_ON(!host);
 	BUG_ON(!host->card);
 
-	/*
-	 * Try to acquire claim host. If failed to get the lock in 2 sec,
-	 * just return; This is to ensure that when this call is invoked
-	 * due to pm_suspend, not to block suspend for longer duration.
-	 */
-	pm_runtime_get_sync(&host->card->dev);
-	if (!mmc_try_claim_host(host, 2000)) {
-		pm_runtime_mark_last_busy(&host->card->dev);
-		pm_runtime_put_autosuspend(&host->card->dev);
-		return;
-	}
+	mmc_get_card(host->card);
 
 	/*
 	 * Just check if our card has been removed.
@@ -1229,6 +1587,14 @@ static int _mmc_sd_suspend(struct mmc_host *host)
 		mmc_card_set_suspended(host->card);
 	}
 
+#ifdef CONFIG_MMC_PASSWORDS
+	/*if sd is unlock , set auto unlock flag , so system resume auto unlock sd card */
+	if (!mmc_card_locked(host->card)) {
+		pr_err("%s: [SDLOCK] sdcard is unlocked on suspend and set auto_unlock = true. \n", mmc_hostname(host));
+		host->card->auto_unlock = true;
+	}
+#endif
+
 out:
 	mmc_release_host(host);
 	return err;
@@ -1241,16 +1607,11 @@ static int mmc_sd_suspend(struct mmc_host *host)
 {
 	int err;
 
-	MMC_TRACE(host, "%s: Enter\n", __func__);
 	err = _mmc_sd_suspend(host);
 	if (!err) {
 		pm_runtime_disable(&host->card->dev);
 		pm_runtime_set_suspended(&host->card->dev);
-	/* if suspend fails, force mmc_detect_change during resume */
-	} else if (mmc_bus_manual_resume(host))
-		host->ignore_bus_resume_flags = true;
-
-	MMC_TRACE(host, "%s: Exit err: %d\n", __func__, err);
+	}
 
 	return err;
 }
@@ -1264,6 +1625,7 @@ static int _mmc_sd_resume(struct mmc_host *host)
 	int err = 0;
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	int retries;
+	int delayTime;
 #endif
 
 	BUG_ON(!host);
@@ -1276,18 +1638,28 @@ static int _mmc_sd_resume(struct mmc_host *host)
 
 	mmc_power_up(host, host->card->ocr);
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
-	retries = 5;
+	/*
+	 * change retry time from 5 to 4,to avoid suspend or resume 12s
+	 * timeout panic,especially bad card
+	 */
+	retries = 4;
+	delayTime = 5;
 	while (retries) {
 		err = mmc_sd_init_card(host, host->card->ocr, host->card);
-
+		if (host->ops->get_cd && host->ops->get_cd(host) == 0) {
+			printk(KERN_ERR "%s(%s): found no card (%d). Stop retrying\n",
+			       __func__, mmc_hostname(host), err);
+			break;
+		}
 		if (err) {
 			printk(KERN_ERR "%s: Re-init card rc = %d (retries = %d)\n",
 			       mmc_hostname(host), err, retries);
 			retries--;
 			mmc_power_off(host);
-			usleep_range(5000, 5500);
+			usleep_range(delayTime * 1000, delayTime * 1000 + 500);
 			mmc_power_up(host, host->card->ocr);
 			mmc_select_voltage(host, host->card->ocr);
+			delayTime *= 2;
 			continue;
 		}
 		break;
@@ -1295,15 +1667,10 @@ static int _mmc_sd_resume(struct mmc_host *host)
 #else
 	err = mmc_sd_init_card(host, host->card->ocr, host->card);
 #endif
-	if (err) {
-		pr_err("%s: %s: mmc_sd_init_card_failed (%d)\n",
-				mmc_hostname(host), __func__, err);
-		mmc_power_off(host);
-		goto out;
-	}
 	mmc_card_clr_suspended(host->card);
-
+       mmc_release_host(host);
 	err = mmc_resume_clk_scaling(host);
+       mmc_claim_host(host);
 	if (err) {
 		pr_err("%s: %s: fail to resume clock scaling (%d)\n",
 			mmc_hostname(host), __func__, err);
@@ -1322,14 +1689,12 @@ static int mmc_sd_resume(struct mmc_host *host)
 {
 	int err = 0;
 
-	MMC_TRACE(host, "%s: Enter\n", __func__);
 	if (!(host->caps & MMC_CAP_RUNTIME_RESUME)) {
 		err = _mmc_sd_resume(host);
 		pm_runtime_set_active(&host->card->dev);
 		pm_runtime_mark_last_busy(&host->card->dev);
 	}
 	pm_runtime_enable(&host->card->dev);
-	MMC_TRACE(host, "%s: Exit err: %d\n", __func__, err);
 
 	return err;
 }
@@ -1355,7 +1720,7 @@ static int mmc_sd_runtime_suspend(struct mmc_host *host)
 /*
  * Callback for runtime_resume.
  */
-static int mmc_sd_runtime_resume(struct mmc_host *host)
+int mmc_sd_runtime_resume(struct mmc_host *host)
 {
 	int err;
 
@@ -1369,6 +1734,7 @@ static int mmc_sd_runtime_resume(struct mmc_host *host)
 
 	return 0;
 }
+EXPORT_SYMBOL(mmc_sd_runtime_resume);
 
 static int mmc_sd_power_restore(struct mmc_host *host)
 {
@@ -1385,11 +1751,6 @@ static int mmc_sd_power_restore(struct mmc_host *host)
 	mmc_claim_host(host);
 	ret = mmc_sd_init_card(host, host->card->ocr, host->card);
 	mmc_release_host(host);
-	if (ret) {
-		pr_err("%s: %s: mmc_sd_init_card_failed (%d)\n",
-				mmc_hostname(host), __func__, ret);
-		return ret;
-	}
 
 	ret = mmc_resume_clk_scaling(host);
 	if (ret)
@@ -1409,6 +1770,10 @@ static const struct mmc_bus_ops mmc_sd_ops = {
 	.power_restore = mmc_sd_power_restore,
 	.alive = mmc_sd_alive,
 	.change_bus_speed = mmc_sd_change_bus_speed,
+#ifdef CONFIG_MMC_PASSWORDS
+	.sysfs_add = mmc_sd_sysfs_add,
+	.sysfs_remove = mmc_sd_sysfs_remove,
+#endif
 };
 
 /*
@@ -1420,6 +1785,7 @@ int mmc_attach_sd(struct mmc_host *host)
 	u32 ocr, rocr;
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	int retries;
+	int delayTime;
 #endif
 
 	BUG_ON(!host);
@@ -1427,7 +1793,23 @@ int mmc_attach_sd(struct mmc_host *host)
 
 	err = mmc_send_app_op_cond(host, 0, &ocr);
 	if (err)
-		return err;
+#ifdef CONFIG_HUAWEI_KERNEL
+    {
+        if (host && !strcmp(mmc_hostname(host), "mmc1") && !(host->caps & MMC_CAP_NONREMOVABLE))
+        {
+            host->sd_init_retry_cnt++ ;
+            host->sd_present = 0;
+            pr_err("%s %d app_op host->sd_init_retry_cnt = %d  host->sd_present = %d\n",__func__,__LINE__,host->sd_init_retry_cnt, host->sd_present);
+            return err;
+        }
+        else
+        {
+            return err;
+        }
+    }
+#else
+    return err;
+#endif
 
 	mmc_attach_bus(host, &mmc_sd_ops);
 	if (host->ocr_avail_sd)
@@ -1459,14 +1841,29 @@ int mmc_attach_sd(struct mmc_host *host)
 	 */
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	retries = 5;
+	delayTime = 5;
 	while (retries) {
 		err = mmc_sd_init_card(host, rocr, NULL);
+		if (host->ops->get_cd && host->ops->get_cd(host) == 0) {
+			printk(KERN_ERR "%s(%s): found no card (%d). Stop retrying\n",
+			       __func__, mmc_hostname(host), err);
+			goto err;
+		}
+#ifdef CONFIG_HUAWEI_KERNEL
+        if (!strcmp(mmc_hostname(host), "mmc1") && !(host->caps & MMC_CAP_NONREMOVABLE))
+        {
+            host->sd_init_retry_cnt++ ;
+            host->sd_present = 1;
+            pr_err("%s %d app_op host->sd_init_retry_cnt = %d  host->sd_present = %d\n",__func__,__LINE__,host->sd_init_retry_cnt, host->sd_present);
+        }
+#endif
 		if (err) {
 			retries--;
 			mmc_power_off(host);
-			usleep_range(5000, 5500);
+			usleep_range(delayTime * 1000, delayTime * 1000 + 500);
 			mmc_power_up(host, rocr);
 			mmc_select_voltage(host, rocr);
+			delayTime *= 2;
 			continue;
 		}
 		break;
@@ -1509,3 +1906,71 @@ err:
 	return err;
 }
 
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+unsigned int mmc_get_sd_speed(void)
+{
+    unsigned int speed = 0;
+    switch(g_sd_speed_class)
+	{
+        case 0x00:
+            speed = 0;
+            break;
+        case 0x01:
+            speed = 2;
+            break;
+        case 0x02:
+            speed = 4;
+            break;
+        case 0x03:
+            speed = 6;
+            break;
+        case 0x04:
+            speed = 10;
+            break;
+        default:
+            speed = 2;
+    }
+    return speed;
+}
+#endif
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+/*
+ * get the error cmd logs and previous cmds logs
+*/
+char *dsm_sdcard_get_log(int cmd,int err)
+{
+	int i;
+	int ret = 0;
+	int buff_size = sizeof(g_dsm_log_sum);
+	char *dsm_log_buff = g_dsm_log_sum;
+
+	memset(g_dsm_log_sum,0,buff_size);
+
+	ret = snprintf(dsm_log_buff,buff_size,"Err : %d\n",err);
+	dsm_log_buff += ret;
+	buff_size -= ret;
+
+	for(i = 0; i <= cmd; i++)
+	{
+		ret = snprintf(dsm_log_buff,buff_size,
+		"%s%08x sdcard manufactory id is 0x%x\n",dsm_sdcard_cmd_logs[i].log,\
+		dsm_sdcard_cmd_logs[i].value,dsm_sdcard_cmd_logs[i].manfid);
+		if(ret > buff_size -1)
+		{
+			printk(KERN_ERR "Buff size is not enough\n");
+			printk(KERN_ERR "%s",g_dsm_log_sum);
+			return g_dsm_log_sum;
+		}
+
+		dsm_log_buff += ret;
+		buff_size -= ret;
+	}
+
+	pr_debug("DSM_DEBUG %s",g_dsm_log_sum);
+
+	return g_dsm_log_sum;
+
+}
+EXPORT_SYMBOL(dsm_sdcard_get_log);
+#endif

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015,2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,10 +27,11 @@
 #include "msm8x16-wcd.h"
 #include "msm8916-wcd-irq.h"
 #include "msm8x16_wcd_registers.h"
+#include <sound/hw_audio_info.h>
 
 #define MAX_NUM_IRQS 14
 #define NUM_IRQ_REGS 2
-#define WCD9XXX_SYSTEM_RESUME_TIMEOUT_MS 700
+#define WCD9XXX_SYSTEM_RESUME_TIMEOUT_MS 5000
 
 #define BYTE_BIT_MASK(nr) (1UL << ((nr) % BITS_PER_BYTE))
 #define BIT_BYTE(nr) ((nr) / BITS_PER_BYTE)
@@ -94,6 +95,7 @@ struct wcd9xxx_spmi_map {
 };
 
 struct wcd9xxx_spmi_map map;
+static bool mbhc_sw_flag;
 
 void wcd9xxx_spmi_enable_irq(int irq)
 {
@@ -210,17 +212,26 @@ static int get_irq_bit(int linux_irq)
 	return i;
 }
 
+static int get_order_irq(int  i)
+{
+	return order[i];
+}
+
 static irqreturn_t wcd9xxx_spmi_irq_handler(int linux_irq, void *data)
 {
-	int irq, i;
+	int irq, i, j;
 	unsigned long status[NUM_IRQ_REGS] = {0};
 
+	irq = get_irq_bit(linux_irq);
+	mbhc_sw_flag = false;
+	if (MSM8X16_WCD_IRQ_MBHC_HS_DET == irq)
+		mbhc_sw_flag = true;
+
 	if (unlikely(wcd9xxx_spmi_lock_sleep() == false)) {
-		pr_err("Failed to hold suspend\n");
+		pr_err("Failed to hold suspend, swflag=%d\n", mbhc_sw_flag);
 		return IRQ_NONE;
 	}
 
-	irq = get_irq_bit(linux_irq);
 	if (irq == MAX_NUM_IRQS)
 		return IRQ_HANDLED;
 
@@ -231,8 +242,16 @@ static irqreturn_t wcd9xxx_spmi_irq_handler(int linux_irq, void *data)
 			MSM8X16_WCD_A_DIGITAL_INT_LATCHED_STS);
 		status[i] &= ~map.mask[i];
 	}
-
-	map.handler[irq](irq, data);
+	for (i = 0; i < MAX_NUM_IRQS; i++) {
+		j = get_order_irq(i);
+		if ((status[BIT_BYTE(j)] & BYTE_BIT_MASK(j)) &&
+			((map.handled[BIT_BYTE(j)] &
+			BYTE_BIT_MASK(j)) == 0)) {
+			map.handler[j](irq, data);
+			map.handled[BIT_BYTE(j)] |=
+					BYTE_BIT_MASK(j);
+		}
+	}
 	map.handled[BIT_BYTE(irq)] &= ~BYTE_BIT_MASK(irq);
 	wcd9xxx_spmi_unlock_sleep();
 
@@ -366,6 +385,11 @@ bool wcd9xxx_spmi_lock_sleep(void)
 			__func__,
 			WCD9XXX_SYSTEM_RESUME_TIMEOUT_MS, map.pm_state,
 			map.wlock_holders);
+		if (mbhc_sw_flag) {
+			audio_dsm_report_info(DSM_AUDIO_CODEC_RESUME_FAIL_ERROR,
+				 "%s pm_state = %d, wlock_holders = %d\n",
+				 __func__, map.pm_state, map.wlock_holders);
+		}
 		wcd9xxx_spmi_unlock_sleep();
 		return false;
 	}

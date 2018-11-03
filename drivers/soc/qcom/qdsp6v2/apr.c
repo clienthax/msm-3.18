@@ -35,6 +35,7 @@
 #include <linux/qdsp6v2/apr_tal.h>
 #include <linux/qdsp6v2/dsp_debug.h>
 #include <linux/ipc_logging.h>
+#include <sound/hw_audio_info.h>
 
 #define SCM_Q6_NMI_CMD 0x1
 #define APR_PKT_IPC_LOG_PAGE_CNT 2
@@ -276,7 +277,6 @@ int apr_send_pkt(void *handle, uint32_t *buf)
 	uint16_t dest_id;
 	uint16_t client_id;
 	uint16_t w_len;
-	int rc;
 	unsigned long flags;
 
 	if (!handle || !buf) {
@@ -291,6 +291,8 @@ int apr_send_pkt(void *handle, uint32_t *buf)
 	if ((svc->dest_id == APR_DEST_QDSP6) &&
 	    (apr_get_q6_state() != APR_SUBSYS_LOADED)) {
 		pr_err("%s: Still dsp is not Up\n", __func__);
+		audio_dsm_report_num(DSM_AUDIO_MODEM_CRASH_ERROR_NO,
+								DSM_AUDIO_MESG_MODEM_STILL_NOTUP);
 		return -ENETRESET;
 	} else if ((svc->dest_id == APR_DEST_MODEM) &&
 		   (apr_get_modem_state() == APR_SUBSYS_DOWN)) {
@@ -318,23 +320,14 @@ int apr_send_pkt(void *handle, uint32_t *buf)
 	APR_PKT_INFO("Tx: dest_svc[%d], opcode[0x%X], size[%d]",
 			hdr->dest_svc, hdr->opcode, hdr->pkt_size);
 
-	rc = apr_tal_write(clnt->handle, buf,
+	w_len = apr_tal_write(clnt->handle, buf,
 			(struct apr_pkt_priv *)&svc->pkt_owner,
 			hdr->pkt_size);
-	if (rc >= 0) {
-		w_len = rc;
-		if (w_len != hdr->pkt_size) {
-			pr_err("%s: Unable to write whole APR pkt successfully: %d\n",
-			       __func__, rc);
-			rc = -EINVAL;
-		}
-	} else {
-		pr_err("%s: Write APR pkt failed with error %d\n",
-			__func__, rc);
-	}
+	if (w_len != hdr->pkt_size)
+		pr_err("Unable to write APR pkt successfully: %d\n", w_len);
 	spin_unlock_irqrestore(&svc->w_lock, flags);
 
-	return rc;
+	return w_len;
 }
 
 int apr_pkt_config(void *handle, struct apr_pkt_cfg *cfg)
@@ -608,8 +601,7 @@ void apr_cb_func(void *buf, int len, void *priv)
 
 	temp_port = ((data.dest_port >> 8) * 8) + (data.dest_port & 0xFF);
 	pr_debug("port = %d t_port = %d\n", data.src_port, temp_port);
-	if (((temp_port >= 0) && (temp_port < APR_MAX_PORTS))
-		&& (c_svc->port_cnt && c_svc->port_fn[temp_port]))
+	if (c_svc->port_cnt && c_svc->port_fn[temp_port])
 		c_svc->port_fn[temp_port](&data,  c_svc->port_priv[temp_port]);
 	else if (c_svc->fn)
 		c_svc->fn(&data, c_svc->priv);
@@ -749,7 +741,6 @@ void dispatch_event(unsigned long code, uint16_t proc)
 	uint16_t clnt;
 	int i, j;
 
-	memset(&data, 0, sizeof(data));
 	data.opcode = RESET_EVENTS;
 	data.reset_event = code;
 

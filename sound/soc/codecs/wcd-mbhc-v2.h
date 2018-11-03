@@ -391,6 +391,9 @@ struct wcd_mbhc {
 	bool is_extn_cable;
 	bool skip_imped_detection;
 	bool is_btn_already_regd;
+	bool force_gnd_mic_swap_to_headphone;
+	bool hph_gain_high_as_default;
+	u32 detect_insert_debounce;
 
 	struct snd_soc_codec *codec;
 	/* Work to perform MBHC Firmware Read */
@@ -428,6 +431,9 @@ struct wcd_mbhc {
 	struct mutex hphr_pa_lock;
 
 	unsigned long intr_status;
+
+	/* Delayed work to report vol+ press for camera */
+	struct delayed_work btn_take_pic_dwork;
 };
 #define WCD_MBHC_CAL_SIZE(buttons, rload) ( \
 	sizeof(struct wcd_mbhc_general_cfg) + \

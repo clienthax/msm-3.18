@@ -740,7 +740,7 @@ static int diag_smd_read(void *ctxt, unsigned char *buf, int buf_len)
 	}
 
 	/*
-	 * Reset the buffers. Also release the wake source hold earlier.
+	 * Reset the buffers. Also release the wake source hold earlier
 	 */
 	if (atomic_read(&smd_info->diag_state) == 0) {
 		DIAG_LOG(DIAG_DEBUG_PERIPHERALS,

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -35,6 +35,7 @@
 #include <soc/qcom/smem.h>
 #include <soc/qcom/boot_stats.h>
 
+#include <huawei_platform/sensor/hw_sensor_info.h>
 #define BUILD_ID_LENGTH 32
 #define SMEM_IMAGE_VERSION_BLOCKS_COUNT 32
 #define SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE 128
@@ -45,8 +46,8 @@
 #define SMEM_IMAGE_VERSION_OEM_SIZE 32
 #define SMEM_IMAGE_VERSION_OEM_OFFSET 96
 #define SMEM_IMAGE_VERSION_PARTITION_APPS 10
+#define HW_BOARDID_BEGIN_NUM 8000
 
-static DECLARE_RWSEM(current_image_rwsem);
 enum {
 	HW_PLATFORM_UNKNOWN = 0,
 	HW_PLATFORM_SURF    = 1,
@@ -66,7 +67,6 @@ enum {
 	HW_PLATFORM_STP = 23,
 	HW_PLATFORM_SBC = 24,
 	HW_PLATFORM_ADP = 25,
-	HW_PLATFORM_TTP = 30,
 	HW_PLATFORM_INVALID
 };
 
@@ -88,7 +88,6 @@ const char *hw_platform[] = {
 	[HW_PLATFORM_STP] = "STP",
 	[HW_PLATFORM_SBC] = "SBC",
 	[HW_PLATFORM_ADP] = "ADP",
-	[HW_PLATFORM_TTP] = "TTP",
 };
 
 enum {
@@ -559,29 +558,19 @@ static struct msm_soc_info cpu_of_id[] = {
 	[293] = {MSM_CPU_8953, "MSM8953"},
 	[304] = {MSM_CPU_8953, "APQ8053"},
 
-	/* SDM450 ID */
-	[338] = {MSM_CPU_SDM450, "SDM450"},
-	[351] = {MSM_CPU_SDM450, "SDA450"},
-
-
 	/* 9607 IDs */
 	[290] = {MSM_CPU_9607, "MDM9607"},
 	[296] = {MSM_CPU_9607, "MDM8207"},
 	[297] = {MSM_CPU_9607, "MDM9207"},
 	[298] = {MSM_CPU_9607, "MDM9307"},
 	[299] = {MSM_CPU_9607, "MDM9628"},
-	[322] = {MSM_CPU_9607, "MDM9206"},
 
-	/* 9650 IDs */
-	[279] = {MSM_CPU_9650, "MDM9650"},
-	[283] = {MSM_CPU_9650, "MDM9650"},
-	[284] = {MSM_CPU_9650, "MDM9650"},
-	[285] = {MSM_CPU_9650, "MDM9650"},
-	[286] = {MSM_CPU_9650, "MDM9650"},
-
-	/* SDX20 IDs */
-	[314] = {SDX_CPU_20, "SDX20"},
-	[333] = {SDX_CPU_20, "SDX20"},
+	/* Californium IDs */
+	[279] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
+	[283] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
+	[284] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
+	[285] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
+	[286] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
 
 	/*MSM8937 ID  */
 	[294] = {MSM_CPU_8937, "MSM8937"},
@@ -598,9 +587,6 @@ static struct msm_soc_info cpu_of_id[] = {
 
 	/* MSM8940 IDs */
 	[313] = {MSM_CPU_8940, "MSM8940"},
-
-	/* MDM9150 IDs */
-	[359] = {MSM_CPU_9150, "MDM9150"},
 
 	/* Uninitialized IDs are not known to run Linux.
 	   MSM_CPU_UNKNOWN is set to 0 to ensure these IDs are
@@ -824,8 +810,27 @@ msm_get_hw_platform(struct device *dev,
 	uint32_t hw_type;
 	hw_type = socinfo_get_platform_type();
 
+	if(hw_type >= HW_BOARDID_BEGIN_NUM)
+	{
+		hw_type = HW_PLATFORM_MTP;
+	}else if(hw_type >= HW_PLATFORM_INVALID)
+	{
+		hw_type = HW_PLATFORM_UNKNOWN;
+	}
+
 	return snprintf(buf, PAGE_SIZE, "%-.32s\n",
 			hw_platform[hw_type]);
+}
+static ssize_t
+msm_get_huawei_product(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	const char *product_ver = NULL;
+	product_ver = get_sensor_info_of_product_name();
+
+	return snprintf(buf, PAGE_SIZE, "%-.32s\n",
+			product_ver);
 }
 
 static ssize_t
@@ -964,9 +969,7 @@ msm_get_image_version(struct device *dev,
 		pr_err("Failed to get image version base address");
 		return snprintf(buf, SMEM_IMAGE_VERSION_NAME_SIZE, "Unknown");
 	}
-	down_read(&current_image_rwsem);
 	string_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
-	up_read(&current_image_rwsem);
 	return snprintf(buf, SMEM_IMAGE_VERSION_NAME_SIZE, "%-.75s\n",
 			string_address);
 }
@@ -979,19 +982,14 @@ msm_set_image_version(struct device *dev,
 {
 	char *store_address;
 
-	down_read(&current_image_rwsem);
-	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS) {
-		up_read(&current_image_rwsem);
+	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS)
 		return count;
-	}
 	store_address = socinfo_get_image_version_base_address();
 	if (IS_ERR_OR_NULL(store_address)) {
 		pr_err("Failed to get image version base address");
-		up_read(&current_image_rwsem);
 		return count;
 	}
 	store_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
-	up_read(&current_image_rwsem);
 	snprintf(store_address, SMEM_IMAGE_VERSION_NAME_SIZE, "%-.75s", buf);
 	return count;
 }
@@ -1009,9 +1007,7 @@ msm_get_image_variant(struct device *dev,
 		return snprintf(buf, SMEM_IMAGE_VERSION_VARIANT_SIZE,
 		"Unknown");
 	}
-	down_read(&current_image_rwsem);
 	string_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
-	up_read(&current_image_rwsem);
 	string_address += SMEM_IMAGE_VERSION_VARIANT_OFFSET;
 	return snprintf(buf, SMEM_IMAGE_VERSION_VARIANT_SIZE, "%-.20s\n",
 			string_address);
@@ -1025,19 +1021,14 @@ msm_set_image_variant(struct device *dev,
 {
 	char *store_address;
 
-	down_read(&current_image_rwsem);
-	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS) {
-		up_read(&current_image_rwsem);
+	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS)
 		return count;
-	}
 	store_address = socinfo_get_image_version_base_address();
 	if (IS_ERR_OR_NULL(store_address)) {
 		pr_err("Failed to get image version base address");
-		up_read(&current_image_rwsem);
 		return count;
 	}
 	store_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
-	up_read(&current_image_rwsem);
 	store_address += SMEM_IMAGE_VERSION_VARIANT_OFFSET;
 	snprintf(store_address, SMEM_IMAGE_VERSION_VARIANT_SIZE, "%-.20s", buf);
 	return count;
@@ -1055,9 +1046,7 @@ msm_get_image_crm_version(struct device *dev,
 		pr_err("Failed to get image version base address");
 		return snprintf(buf, SMEM_IMAGE_VERSION_OEM_SIZE, "Unknown");
 	}
-	down_read(&current_image_rwsem);
 	string_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
-	up_read(&current_image_rwsem);
 	string_address += SMEM_IMAGE_VERSION_OEM_OFFSET;
 	return snprintf(buf, SMEM_IMAGE_VERSION_OEM_SIZE, "%-.32s\n",
 			string_address);
@@ -1071,19 +1060,14 @@ msm_set_image_crm_version(struct device *dev,
 {
 	char *store_address;
 
-	down_read(&current_image_rwsem);
-	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS) {
-		up_read(&current_image_rwsem);
+	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS)
 		return count;
-	}
 	store_address = socinfo_get_image_version_base_address();
 	if (IS_ERR_OR_NULL(store_address)) {
 		pr_err("Failed to get image version base address");
-		up_read(&current_image_rwsem);
 		return count;
 	}
 	store_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
-	up_read(&current_image_rwsem);
 	store_address += SMEM_IMAGE_VERSION_OEM_OFFSET;
 	snprintf(store_address, SMEM_IMAGE_VERSION_OEM_SIZE, "%-.32s", buf);
 	return count;
@@ -1094,14 +1078,8 @@ msm_get_image_number(struct device *dev,
 			struct device_attribute *attr,
 			char *buf)
 {
-	int ret;
-
-	down_read(&current_image_rwsem);
-	ret = snprintf(buf, PAGE_SIZE, "%d\n",
+	return snprintf(buf, PAGE_SIZE, "%d\n",
 			current_image);
-	up_read(&current_image_rwsem);
-	return ret;
-
 }
 
 static ssize_t
@@ -1113,12 +1091,10 @@ msm_select_image(struct device *dev, struct device_attribute *attr,
 	ret = kstrtoint(buf, 10, &digit);
 	if (ret)
 		return ret;
-	down_write(&current_image_rwsem);
 	if (0 <= digit && digit < SMEM_IMAGE_VERSION_BLOCKS_COUNT)
 		current_image = digit;
 	else
 		current_image = 0;
-	up_write(&current_image_rwsem);
 	return count;
 }
 
@@ -1171,6 +1147,8 @@ static struct device_attribute msm_soc_attr_build_id =
 static struct device_attribute msm_soc_attr_hw_platform =
 	__ATTR(hw_platform, S_IRUGO, msm_get_hw_platform, NULL);
 
+static struct device_attribute msm_soc_attr_huawei_product =
+	__ATTR(huawei_product, S_IRUSR|S_IRGRP, msm_get_huawei_product, NULL);
 
 static struct device_attribute msm_soc_attr_platform_version =
 	__ATTR(platform_version, S_IRUGO,
@@ -1268,13 +1246,9 @@ static void * __init setup_dummy_socinfo(void)
 		dummy_socinfo.id = 238;
 		strlcpy(dummy_socinfo.build_id, "mdm9640 - ",
 			sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_mdm9650()) {
+	} else if (early_machine_is_mdmcalifornium()) {
 		dummy_socinfo.id = 286;
-		strlcpy(dummy_socinfo.build_id, "mdm9650 - ",
-			sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_sdx20()) {
-		dummy_socinfo.id = 314;
-		strlcpy(dummy_socinfo.build_id, "sdx20 - ",
+		strlcpy(dummy_socinfo.build_id, "mdmcalifornium - ",
 			sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_msm8994()) {
 		dummy_socinfo.id = 207;
@@ -1303,10 +1277,6 @@ static void * __init setup_dummy_socinfo(void)
 	} else if (early_machine_is_msm8953()) {
 		dummy_socinfo.id = 293;
 		strlcpy(dummy_socinfo.build_id, "msm8953 - ",
-			sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_sdm450()) {
-		dummy_socinfo.id = 338;
-		strlcpy(dummy_socinfo.build_id, "sdm450 - ",
 			sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_mdm9607()) {
 		dummy_socinfo.id = 290;
@@ -1383,6 +1353,8 @@ static void __init populate_soc_sysfs_files(struct device *msm_soc_device)
 	case SOCINFO_VERSION(0, 3):
 		device_create_file(msm_soc_device,
 					&msm_soc_attr_hw_platform);
+		device_create_file(msm_soc_device,
+					&msm_soc_attr_huawei_product);
 	case SOCINFO_VERSION(0, 2):
 		device_create_file(msm_soc_device,
 					&msm_soc_attr_raw_id);

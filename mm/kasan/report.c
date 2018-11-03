@@ -135,8 +135,8 @@ static void print_address_description(struct kasan_access_info *info)
 			if (unlikely(object > last_object))
 				object = last_object; /* we hit into padding */
 
-			object_err(cache, page, object,
-				"kasan: bad access detected");
+			//object_err(cache, page, object,
+				//"kasan: bad access detected");
 			return;
 		}
 		dump_page(page, "kasan: bad access detected");
@@ -208,6 +208,9 @@ static void kasan_report_error(struct kasan_access_info *info)
 {
 	unsigned long flags;
 	const char *bug_type;
+
+	if(!(info->is_write))
+		return;
 
 	/*
 	 * Make sure we don't end up in loop.

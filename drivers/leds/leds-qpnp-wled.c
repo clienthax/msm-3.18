@@ -44,7 +44,9 @@
 #define QPNP_WLED_SOFTSTART_RAMP_DLY(b) (b + 0x53)
 #define QPNP_WLED_VLOOP_COMP_RES_REG(b)	(b + 0x55)
 #define QPNP_WLED_VLOOP_COMP_GM_REG(b)	(b + 0x56)
+#define QPNP_WLED_EN_PSM_REG(b)		(b + 0x5A)
 #define QPNP_WLED_PSM_CTRL_REG(b)	(b + 0x5B)
+#define QPNP_WLED_PFM_CTRL_REG(b)	(b + 0x5D)
 #define QPNP_WLED_SC_PRO_REG(b)		(b + 0x5E)
 #define QPNP_WLED_CTRL_SPARE_REG(b)	(b + 0xDF)
 #define QPNP_WLED_TEST1_REG(b)		(b + 0xE2)
@@ -94,7 +96,7 @@
 #define QPNP_WLED_SWITCH_FREQ_800_KHZ	800
 #define QPNP_WLED_SWITCH_FREQ_1600_KHZ	1600
 #define QPNP_WLED_SWITCH_FREQ_OVERWRITE 0x80
-#define QPNP_WLED_OVP_MASK		GENMASK(1, 0)
+#define QPNP_WLED_OVP_MASK		0xFC
 #define QPNP_WLED_OVP_17800_MV		17800
 #define QPNP_WLED_OVP_19400_MV		19400
 #define QPNP_WLED_OVP_29500_MV		29500
@@ -188,11 +190,20 @@
 
 #define QPNP_WLED_MAX_STRINGS		4
 #define WLED_MAX_LEVEL_4095		4095
+#define WLED_6p25_LEVEL_256             256
 #define QPNP_WLED_RAMP_DLY_MS		20
 #define QPNP_WLED_TRIGGER_NONE		"none"
 #define QPNP_WLED_STR_SIZE		20
 #define QPNP_WLED_MIN_MSLEEP		20
 #define QPNP_WLED_SC_DLY_MS		20
+
+#ifdef CONFIG_LCDKIT_DRIVER
+bool lcdkit_is_default_panel(void);
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+extern const char *default_panel_name;
+#endif
+#endif
 
 #define NUM_SUPPORTED_AVDD_VOLTAGES		6
 #define QPNP_WLED_AVDD_DEFAULT_VOLTAGE_MV	7600
@@ -321,6 +332,7 @@ struct qpnp_wled {
 	bool disp_type_amoled;
 	bool en_ext_pfet_sc_pro;
 	bool prev_state;
+	int pfm_enabled;
 };
 
 /* helper to read a pmic register */
@@ -414,6 +426,37 @@ static int qpnp_wled_set_level(struct qpnp_wled *wled, int level)
 {
 	int i, rc;
 	u8 reg;
+	/*
+	 * If brightness level < 6.25% of max enable PFM
+	 *  else if brightness level >= 6.25% of max disable PFM
+	 */
+	if (level < WLED_6p25_LEVEL_256 && wled->pfm_enabled != 1) {
+		reg = 0x85;
+		rc = qpnp_wled_write_reg(wled, &reg,
+				QPNP_WLED_PFM_CTRL_REG(wled->ctrl_base));
+		if (rc < 0)
+			return rc;
+		wled->pfm_enabled = 1;
+
+		reg = 0x00;
+		rc = qpnp_wled_write_reg(wled, &reg,
+				QPNP_WLED_EN_PSM_REG(wled->ctrl_base));
+		if (rc < 0)
+			return rc;
+	} else if (level >= WLED_6p25_LEVEL_256 && wled->pfm_enabled != 0) {
+		reg = 0x05;
+		rc = qpnp_wled_write_reg(wled, &reg,
+				QPNP_WLED_PFM_CTRL_REG(wled->ctrl_base));
+		if (rc < 0)
+			return rc;
+		wled->pfm_enabled = 0;
+
+		reg = 0x80;
+		rc = qpnp_wled_write_reg(wled, &reg,
+				QPNP_WLED_EN_PSM_REG(wled->ctrl_base));
+		if (rc < 0)
+			return rc;
+	}
 
 	/* set brightness registers */
 	for (i = 0; i < wled->num_strings; i++) {
@@ -683,9 +726,9 @@ static ssize_t qpnp_wled_dim_mode_store(struct device *dev,
 	if (snprintf(str, QPNP_WLED_STR_SIZE, "%s", buf) > QPNP_WLED_STR_SIZE)
 		return -EINVAL;
 
-	if (strcmp(str, "analog\n") == 0)
+	if (strcmp(str, "analog") == 0)
 		temp = QPNP_WLED_DIM_ANALOG;
-	else if (strcmp(str, "digital\n") == 0)
+	else if (strcmp(str, "digital") == 0)
 		temp = QPNP_WLED_DIM_DIGITAL;
 	else
 		temp = QPNP_WLED_DIM_HYBRID;
@@ -802,6 +845,17 @@ static void qpnp_wled_work(struct work_struct *work)
 	mutex_lock(&wled->cdev.led_access);
 
 	level = wled->cdev.brightness;
+#ifdef CONFIG_LCDKIT_DRIVER
+	if(lcdkit_is_default_panel()){
+		level = 0;
+	}
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	 if(!strcmp(default_panel_name, "truly 1080p video mode dsi panel")){
+		level = 0;
+	}
+#endif
+#endif
 
 	if (level) {
 		rc = qpnp_wled_set_level(wled, level);
@@ -955,6 +1009,11 @@ static int qpnp_wled_set_disp(struct qpnp_wled *wled, u16 base_addr)
 		if (rc)
 			return rc;
 	} else {
+			reg = 0x83;
+			rc = qpnp_wled_write_reg(wled, &reg,
+					QPNP_WLED_PSM_CTRL_REG(wled->ctrl_base));
+			if (rc)
+				return rc;
 		/*
 		 * enable VREF_UP to avoid false ovp on low brightness for LCD
 		 */
@@ -1100,28 +1159,31 @@ static int qpnp_wled_config(struct qpnp_wled *wled)
 	if (rc)
 		return rc;
 
-	/* Configure the OVP register only if display type is not AMOLED */
-	if (!wled->disp_type_amoled) {
-		if (wled->ovp_mv <= QPNP_WLED_OVP_17800_MV) {
-			wled->ovp_mv = QPNP_WLED_OVP_17800_MV;
-			temp = 3;
-		} else if (wled->ovp_mv <= QPNP_WLED_OVP_19400_MV) {
-			wled->ovp_mv = QPNP_WLED_OVP_19400_MV;
-			temp = 2;
-		} else if (wled->ovp_mv <= QPNP_WLED_OVP_29500_MV) {
-			wled->ovp_mv = QPNP_WLED_OVP_29500_MV;
-			temp = 1;
-		} else {
-			wled->ovp_mv = QPNP_WLED_OVP_31000_MV;
-			temp = 0;
-		}
-
-		reg = (u8)temp;
-		rc = qpnp_wled_masked_write_reg(wled, QPNP_WLED_OVP_MASK, &reg,
-				QPNP_WLED_OVP_REG(wled->ctrl_base));
-		if (rc)
-			return rc;
+	/* Configure the OVP register */
+	if (wled->ovp_mv <= QPNP_WLED_OVP_17800_MV) {
+		wled->ovp_mv = QPNP_WLED_OVP_17800_MV;
+		temp = 3;
+	} else if (wled->ovp_mv <= QPNP_WLED_OVP_19400_MV) {
+		wled->ovp_mv = QPNP_WLED_OVP_19400_MV;
+		temp = 2;
+	} else if (wled->ovp_mv <= QPNP_WLED_OVP_29500_MV) {
+		wled->ovp_mv = QPNP_WLED_OVP_29500_MV;
+		temp = 1;
+	} else {
+		wled->ovp_mv = QPNP_WLED_OVP_31000_MV;
+		temp = 0;
 	}
+
+	rc = qpnp_wled_read_reg(wled, &reg,
+			QPNP_WLED_OVP_REG(wled->ctrl_base));
+	if (rc < 0)
+		return rc;
+	reg &= QPNP_WLED_OVP_MASK;
+	reg |= temp;
+	rc = qpnp_wled_write_reg(wled, &reg,
+			QPNP_WLED_OVP_REG(wled->ctrl_base));
+	if (rc)
+		return rc;
 
 	rc = qpnp_wled_read_reg(wled, &reg,
 			QPNP_WLED_CTRL_SPARE_REG(wled->ctrl_base));
@@ -1147,8 +1209,8 @@ static int qpnp_wled_config(struct qpnp_wled *wled)
 
 		/* Update WLED_OVP register based on desired target voltage */
 		reg = qpnp_wled_ovp_reg_settings[i];
-		rc = qpnp_wled_masked_write_reg(wled, QPNP_WLED_OVP_MASK, &reg,
-				QPNP_WLED_OVP_REG(wled->ctrl_base));
+		rc = qpnp_wled_write_reg(wled, &reg,
+			QPNP_WLED_OVP_REG(wled->ctrl_base));
 		if (rc)
 			return rc;
 
@@ -1571,7 +1633,7 @@ static int qpnp_wled_parse_dt(struct qpnp_wled *wled)
 	if (!rc) {
 		wled->ovp_mv = temp_val;
 	} else if (rc != -EINVAL) {
-		dev_err(&spmi->dev, "Unable to read ovp\n");
+		dev_err(&spmi->dev, "Unable to read vref\n");
 		return rc;
 	}
 
@@ -1664,6 +1726,9 @@ static int qpnp_wled_parse_dt(struct qpnp_wled *wled)
 			"qcom,en-phase-stag");
 	wled->en_cabc = of_property_read_bool(spmi->dev.of_node,
 			"qcom,en-cabc");
+
+	/* init state and pfm needs to be configured appropriately */
+	wled->pfm_enabled = 2;
 
 	prop = of_find_property(spmi->dev.of_node,
 			"qcom,led-strings-list", &temp_val);
