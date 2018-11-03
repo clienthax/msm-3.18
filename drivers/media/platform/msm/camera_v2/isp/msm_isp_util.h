@@ -18,9 +18,29 @@
 
 /* #define CONFIG_MSM_ISP_DBG 1 */
 
+#ifdef CONFIG_HUAWEI_KERNEL
+extern bool huawei_cam_is_factory_mode(void);
+#endif
+
 #ifdef CONFIG_MSM_ISP_DBG
+#undef ISP_DBG
 #define ISP_DBG(fmt, args...) printk(fmt, ##args)
+#define ISP_HW_DBG(fmt, args...) printk(fmt, ##args)
 #else
+#ifdef CONFIG_HUAWEI_KERNEL
+#define ISP_HW_DBG(fmt, args...)       \
+do{                                 \
+    if(huawei_cam_is_factory_mode())\
+    {                               \
+        printk(fmt, ##args);        \
+    }                               \
+    else                            \
+    {                               \
+        pr_debug(fmt, ##args);      \
+    }                               \
+}while(0)
+#endif
+#undef ISP_DBG
 #define ISP_DBG(fmt, args...) pr_debug(fmt, ##args)
 #endif
 
@@ -74,4 +94,8 @@ void msm_isp_save_framedrop_values(struct vfe_device *vfe_dev,
 	enum msm_vfe_input_src frame_src);
 void msm_isp_get_timestamp(struct msm_isp_timestamp *time_stamp,
 	struct vfe_device *vfe_dev);
+void msm_isp_process_overflow_irq(
+	struct vfe_device *vfe_dev,
+	uint32_t *irq_status0, uint32_t *irq_status1,
+	uint32_t force_overflow);
 #endif /* __MSM_ISP_UTIL_H__ */

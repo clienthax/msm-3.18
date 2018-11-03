@@ -531,6 +531,11 @@ void rmnet_config_netlink_msg_handler(struct sk_buff *skb)
 	nlmsg_header = (struct nlmsghdr *) skb->data;
 	rmnet_header = (struct rmnet_nl_msg_s *) nlmsg_data(nlmsg_header);
 
+	if (!nlmsg_header->nlmsg_pid ||
+	    (nlmsg_header->nlmsg_len < sizeof(struct nlmsghdr) +
+				       sizeof(struct rmnet_nl_msg_s)))
+		return;
+
 	LOGL("Netlink message pid=%d, seq=%d, length=%d, rmnet_type=%d",
 		nlmsg_header->nlmsg_pid,
 		nlmsg_header->nlmsg_seq,
@@ -1204,9 +1209,16 @@ int rmnet_config_notify_cb(struct notifier_block *nb,
 	case NETDEV_UNREGISTER_FINAL:
 	case NETDEV_UNREGISTER:
 		trace_rmnet_unregister_cb_entry(dev);
+#ifdef CONFIG_HUAWEI_WIFI
+		LOGH("Kernel is trying to unregister %s, event = %lu", dev->name, event);
+#else
 		LOGH("Kernel is trying to unregister %s", dev->name);
+#endif
 		rmnet_force_unassociate_device(dev);
 		trace_rmnet_unregister_cb_exit(dev);
+#ifdef CONFIG_HUAWEI_WIFI
+		LOGH("Kernel is unregistered %s, %lu", dev->name, event);
+#endif
 		break;
 
 	default:

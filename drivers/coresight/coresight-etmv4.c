@@ -3063,10 +3063,6 @@ static void etm_init_arch_data(void *info)
 
 	ETM_UNLOCK(drvdata);
 
-	/* check the state of the fuse */
-	if (!coresight_authstatus_enabled(drvdata->base))
-		goto out;
-
 	/* find all capabilities */
 	/* tracing capabilities of trace unit */
 	etmidr0 = etm_readl(drvdata, TRCIDR0);
@@ -3590,8 +3586,11 @@ static int etm_probe(struct platform_device *pdev)
 	struct etm_drvdata *drvdata;
 	struct resource *res;
 	struct device_node *cpu_node;
-
-	pdata = of_get_coresight_platform_data(dev, pdev->dev.of_node);
+    if (coresight_fuse_access_disabled() || coresight_fuse_apps_access_disabled())
+    {
+        return -EPERM;
+    }
+    pdata = of_get_coresight_platform_data(dev, pdev->dev.of_node);
 	if (IS_ERR(pdata))
 		return PTR_ERR(pdata);
 	pdev->dev.platform_data = pdata;
@@ -3702,8 +3701,10 @@ err1:
 		unregister_hotcpu_notifier(&etm_cpu_notifier);
 		unregister_hotcpu_notifier(&etm_cpu_dying_notifier);
 	}
+	etmdrvdata[cpu] = NULL;
 err0:
 	wakeup_source_trash(&drvdata->ws);
+	platform_set_drvdata(pdev, NULL);
 	return ret;
 }
 

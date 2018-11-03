@@ -27,6 +27,7 @@
 #include <sound/q6afe-v2.h>
 #include <sound/msm-dai-q6-v2.h>
 #include <sound/pcm_params.h>
+#include <sound/hw_audio_info.h>
 
 #define MSM_DAI_PRI_AUXPCM_DT_DEV_ID 1
 #define MSM_DAI_SEC_AUXPCM_DT_DEV_ID 2
@@ -3150,6 +3151,11 @@ static int msm_dai_q6_mi2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	struct msm_dai_q6_mi2s_dai_data *mi2s_dai_data =
 	dev_get_drvdata(dai->dev);
 
+	if (smartpa_is_four_tas2560()) {
+		if (dai->id == MSM_QUIN_MI2S || dai->id == MSM_QUAT_MI2S)
+			goto skip_status_check;
+	}
+
 	if (test_bit(STATUS_PORT_STARTED,
 	    mi2s_dai_data->rx_dai.mi2s_dai_data.status_mask) ||
 	    test_bit(STATUS_PORT_STARTED,
@@ -3159,6 +3165,7 @@ static int msm_dai_q6_mi2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		return -EPERM;
 	}
 
+skip_status_check:
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
 	case SND_SOC_DAIFMT_CBS_CFS:
 		mi2s_dai_data->rx_dai.mi2s_dai_data.port_config.i2s.ws_src = 1;

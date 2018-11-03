@@ -4268,8 +4268,9 @@ static u32 mdss_mdp_poll_ctl_reset_status(struct mdss_mdp_ctl *ctl, u32 cnt)
 	 * it takes around 30us to have mdp finish resetting its ctl path
 	 * poll every 50us so that reset should be completed at 1st poll
 	 */
+	/* Increases poll periods from 50us to 200us ensure the reset can be completed successfully.*/
 	do {
-		udelay(50);
+		udelay(200);
 		status = mdss_mdp_ctl_read(ctl, MDSS_MDP_REG_CTL_SW_RESET);
 		status &= 0x01;
 		pr_debug("status=%x, count=%d\n", status, cnt);

@@ -49,6 +49,8 @@ struct swap_info_struct;
 struct seq_file;
 struct workqueue_struct;
 struct iov_iter;
+struct fscrypt_info;
+struct fscrypt_operations;
 
 extern void __init inode_init(void);
 extern void __init inode_init_early(void);
@@ -124,6 +126,12 @@ typedef void (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 /* File is opened with O_PATH; almost nothing can be done with it */
 #define FMODE_PATH		((__force fmode_t)0x4000)
 
+/* File hasn't page cache and can't be mmaped, for stackable filesystem */
+#define FMODE_NOMAPPABLE        ((__force fmode_t)0x8000)
+
+/* File page don't need to be cached, for stackable filesystem's lower file */
+#define FMODE_NOCACHEABLE		((__force fmode_t)0x10000)
+
 /* File needs atomic accesses to f_pos */
 #define FMODE_ATOMIC_POS	((__force fmode_t)0x8000)
 /* Write access to underlying fs */
@@ -184,6 +192,9 @@ typedef void (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
  * WRITE_FLUSH_FUA	Combination of WRITE_FLUSH and FUA. The IO is preceded
  *			by a cache flush and data is guaranteed to be on
  *			non-volatile media on completion.
+ * WRITE_BG		Background write. This is for background activity like
+ *			the periodic flush and background threshold writeback
+ *
  *
  */
 #define RW_MASK			REQ_WRITE
@@ -206,7 +217,7 @@ typedef void (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 #define WRITE_ORDERED_FLUSH_BARRIER	(WRITE | REQ_SYNC | REQ_NOIDLE | \
 					 REQ_FLUSH | REQ_POST_FLUSH_BARRIER | \
 					 REQ_BARRIER)
-
+#define WRITE_BG		(WRITE | REQ_NOIDLE | REQ_BG)
 /*
  * Attribute flags.  These should be or-ed together to figure out what
  * has been changed!
@@ -630,7 +641,15 @@ struct inode {
 	struct hlist_head	i_fsnotify_marks;
 #endif
 
+#if IS_ENABLED(CONFIG_FS_ENCRYPTION)
+	struct fscrypt_info	*i_crypt_info;
+#endif
+
 	void			*i_private; /* fs or device private pointer */
+
+#ifdef CONFIG_TASK_PROTECT_LRU
+	int			i_protect;
+#endif
 };
 
 static inline int inode_unhashed(struct inode *inode)
@@ -1228,6 +1247,9 @@ struct super_block {
 	const struct xattr_handler **s_xattr;
 
 	struct list_head	s_inodes;	/* all inodes */
+
+	const struct fscrypt_operations	*s_cop;
+
 	struct hlist_bl_head	s_anon;		/* anonymous dentries for (nfs) exporting */
 	struct list_head	s_mounts;	/* list of mounts; _not_ for fs use */
 	struct block_device	*s_bdev;
@@ -1524,6 +1546,8 @@ struct file_operations {
 	long (*fallocate)(struct file *file, int mode, loff_t offset,
 			  loff_t len);
 	int (*show_fdinfo)(struct seq_file *m, struct file *f);
+	/* get_lower_file is for stackable file system */
+	struct file* (*get_lower_file)(struct file *f);
 };
 
 struct inode_operations {

@@ -333,7 +333,7 @@ static int cmdq_host_alloc_tdl(struct cmdq_host *cq_host)
 
 	return 0;
 }
-
+#define CID_MANFID_MICRON	0x13
 static int cmdq_enable(struct mmc_host *mmc)
 {
 	int err = 0;
@@ -345,6 +345,12 @@ static int cmdq_enable(struct mmc_host *mmc)
 		err = -EINVAL;
 		goto out;
 	}
+
+        if(CID_MANFID_MICRON == mmc->card->cid.manfid)
+        {
+            //Change the value of CQSSC1 to 0x70040 with mmc_fixups when setting CQSSC1 registers for Micron¡¯s eMCP
+            cmdq_writel(cq_host, cmdq_readl(cq_host, CQSSC1) | SEND_QSR_INTERVAL, CQSSC1);
+        }
 
 	if (cq_host->enabled)
 		goto out;

@@ -30,6 +30,7 @@
 #include "lpm-levels.h"
 #endif
 #include <linux/workqueue.h>
+#include <linux/module.h>
 
 /**
  * struct alarm_base - Alarm timer bases
@@ -61,6 +62,7 @@ static struct rtc_device	*rtcdev;
 static DEFINE_SPINLOCK(rtcdev_lock);
 static struct mutex power_on_alarm_lock;
 static struct alarm init_alarm;
+#define ALARM_DELTA 60
 
 /**
  * power_on_alarm_init - Init power on alarm value
@@ -146,6 +148,16 @@ void set_power_on_alarm(void)
 	rtc_tm_to_time(&rtc_time, &rtc_secs);
 	alarm_delta = wall_time.tv_sec - rtc_secs;
 	alarm_time = alarm_secs - alarm_delta;
+
+	/*
+	 * Substract ALARM_DELTA from actual alarm time to power up
+	 * the device before actual alarm expiration.
+	 */
+	if ((alarm_time - ALARM_DELTA) > rtc_secs) {
+		alarm_time -= ALARM_DELTA;
+	} else {
+		goto disable_alarm;
+	}
 
 	rtc_time_to_tm(alarm_time, &alarm.time);
 	alarm.enabled = 1;
@@ -352,6 +364,13 @@ ktime_t alarm_expires_remaining(const struct alarm *alarm)
 }
 EXPORT_SYMBOL_GPL(alarm_expires_remaining);
 
+bool hw_alarm_stop = 0;
+module_param(hw_alarm_stop, bool, 0644);
+MODULE_PARM_DESC(hw_alarm_stop, "stop or not alarm");
+EXPORT_SYMBOL(hw_alarm_stop);
+
+extern bool is_runmode_factory(void);
+
 #ifdef CONFIG_RTC_CLASS
 /**
  * alarmtimer_suspend - Suspend time callback
@@ -375,6 +394,10 @@ static int alarmtimer_suspend(struct device *dev)
 
 	cancel_delayed_work_sync(&work);
 
+	if (hw_alarm_stop && is_runmode_factory()){
+		pr_err("is_runmode_factory true, forbid alarms\n");
+		return 0;
+	}
 	spin_lock_irqsave(&freezer_delta_lock, flags);
 	min = freezer_delta;
 	freezer_delta = ktime_set(0, 0);
@@ -440,6 +463,11 @@ static int alarmtimer_suspend(struct device *dev)
 
 	cancel_delayed_work_sync(&work);
 
+	if (hw_alarm_stop && is_runmode_factory()){
+		pr_err("is_runmode_factory true, forbid alarms\n");
+		return 0;
+	}
+
 	spin_lock_irqsave(&freezer_delta_lock, flags);
 	min = freezer_delta;
 	freezer_delta = ktime_set(0, 0);
@@ -490,12 +518,17 @@ static int alarmtimer_resume(struct device *dev)
 {
 	struct rtc_device *rtc;
 
+	if (hw_alarm_stop && is_runmode_factory()){
+		pr_err("is_runmode_factory true, forbid alarms\n");
+		goto queue;
+	}
 	rtc = alarmtimer_get_rtcdev();
 	/* If we have no rtcdev, just return */
 	if (!rtc)
 		return 0;
 	rtc_timer_cancel(rtc, &rtctimer);
 
+queue:
 	queue_delayed_work(power_off_alarm_workqueue, &work, 0);
 	return 0;
 }

@@ -37,6 +37,10 @@
 #include "xt_qtaguid_print.h"
 #include "../../fs/proc/internal.h"
 
+#ifdef CONFIG_HW_WIFIPRO
+#include <linux/snmp.h>
+extern void wifipro_update_tcp_statistics(int mib_type, const struct sk_buff *skb, struct sock *from_sk);
+#endif
 /*
  * We only use the xt_socket funcs within a similar context to avoid unexpected
  * return values.
@@ -1228,6 +1232,12 @@ static void iface_stat_update_from_skb(const struct sk_buff *skb,
 		 par->hooknum, __func__, el_dev->name, el_dev->type,
 		 par->family, proto, direction);
 
+#ifdef CONFIG_HW_WIFIPRO
+	if(direction == IFS_TX){
+		wifipro_update_tcp_statistics(WIFIPRO_TCP_MIB_OUTSEGS, skb, NULL);
+	}
+#endif
+
 	spin_lock_bh(&iface_stat_list_lock);
 	entry = get_iface_entry(el_dev->name);
 	if (entry == NULL) {
@@ -1934,7 +1944,7 @@ static int qtaguid_ctrl_proc_show(struct seq_file *m, void *v)
 			);
 		f_count = atomic_long_read(
 			&sock_tag_entry->socket->file->f_count);
-		seq_printf(m, "sock=%p tag=0x%llx (uid=%u) pid=%u "
+		seq_printf(m, "sock=%pK tag=0x%llx (uid=%u) pid=%u "
 			   "f_count=%lu\n",
 			   sock_tag_entry->sk,
 			   sock_tag_entry->tag, uid,
@@ -2537,8 +2547,7 @@ static int pp_stats_line(struct seq_file *m, struct tag_stat *ts_entry,
 	uid_t stat_uid = get_uid_from_tag(tag);
 	struct proc_print_info *ppi = m->private;
 	/* Detailed tags are not available to everybody */
-	if (get_atag_from_tag(tag) && !can_read_other_uid_stats(
-						make_kuid(&init_user_ns,stat_uid))) {
+	if (!can_read_other_uid_stats(make_kuid(&init_user_ns,stat_uid))) {
 		CT_DEBUG("qtaguid: stats line: "
 			 "%s 0x%llx %u: insufficient priv "
 			 "from pid=%u tgid=%u uid=%u stats.gid=%u\n",

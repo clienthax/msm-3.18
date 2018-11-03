@@ -50,6 +50,7 @@
 
 #include <linux/compat.h>
 #include "compat_qseecom.h"
+#include <linux/init.h>
 
 #define QSEECOM_DEV			"qseecom"
 #define QSEOS_VERSION_14		0x14
@@ -124,12 +125,70 @@ enum qseecom_ce_hw_instance {
 	CLK_INVALID,
 };
 
+
+typedef enum
+{
+	RUNMODE_FLAG_NORMAL,
+	RUNMODE_FLAG_FACTORY,
+	RUNMODE_FLAG_UNKNOW
+}hw_runmode_t;
+
+#define RUNMODE_FLAG_NORMAL_KEY     "normal"
+#define RUNMODE_FLAG_FACTORY_KEY    "factory"
+static hw_runmode_t runmode_factory = RUNMODE_FLAG_UNKNOW;
+
+static int __init init_runmode(char *str)
+{
+	if(!str || !(*str)) {
+		printk(KERN_CRIT"%s:get run mode fail\n",__func__);
+		return 0;
+	}
+
+	if(!strncmp(str, RUNMODE_FLAG_FACTORY_KEY, sizeof(RUNMODE_FLAG_FACTORY_KEY)-1)) {
+		runmode_factory = RUNMODE_FLAG_FACTORY;
+		printk(KERN_NOTICE "%s:run mode is factory\n", __func__);
+	} else {
+		runmode_factory = RUNMODE_FLAG_NORMAL;
+		printk(KERN_NOTICE "%s:run mode is normal\n", __func__);
+	}
+
+	return 1;
+}
+
+__setup("androidboot.huawei_swtype=", init_runmode);
+/*Please use the normalized function: runmode_is_faction(Hisi&Qcom)*/
+bool is_runmode_factory(void)
+{
+	if (RUNMODE_FLAG_FACTORY == runmode_factory) {
+		return true;
+	} else {
+		return false;
+	}
+}
+/*This is normalized function(Hisi&Qcom) to jude the version is'n in factory mode*/
+bool runmode_is_factory(void)
+{
+	if (RUNMODE_FLAG_FACTORY == runmode_factory) {
+		return true;
+	} else {
+		return false;
+	}
+}
+
+EXPORT_SYMBOL(is_runmode_factory);
+EXPORT_SYMBOL(runmode_is_factory);
+
+extern unsigned int snr_flag;
+
 static struct class *driver_class;
 static dev_t qseecom_device_no;
 
 static DEFINE_MUTEX(qsee_bw_mutex);
 static DEFINE_MUTEX(app_access_lock);
 static DEFINE_MUTEX(clk_access_lock);
+
+#define HUAWEI_TA_MAGIC_NUM  0x08171401
+#define HUAWEI_UID  1000
 
 struct qseecom_registered_listener_list {
 	struct list_head                 list;
@@ -1812,7 +1871,7 @@ static int __qseecom_reentrancy_process_incomplete_cmd(
 {
 	int ret = 0;
 	int rc = 0;
-	uint32_t lstnr;
+	uint32_t lstnr = 0;
 	unsigned long flags;
 	struct qseecom_client_listener_data_irsp send_data_rsp;
 	struct qseecom_registered_listener_list *ptr_svc = NULL;
@@ -2068,6 +2127,7 @@ static int qseecom_load_app(struct qseecom_dev_handle *data, void __user *argp)
 	struct qseecom_load_app_64bit_ireq load_req_64bit;
 	void *cmd_buf = NULL;
 	size_t cmd_len;
+	bool first_time = false;
 
 	/* Copy the relevant information needed for loading the image */
 	if (copy_from_user(&load_img_req,
@@ -2139,6 +2199,7 @@ static int qseecom_load_app(struct qseecom_dev_handle *data, void __user *argp)
 		&qseecom.registered_app_list_lock, flags);
 		ret = 0;
 	} else {
+		first_time = true;
 		pr_warn("App (%s) does'nt exist, loading apps for first time\n",
 			(char *)(load_img_req.img_name));
 		/* Get the handle of the shared fd */
@@ -2270,8 +2331,15 @@ static int qseecom_load_app(struct qseecom_dev_handle *data, void __user *argp)
 	load_img_req.app_id = app_id;
 	if (copy_to_user(argp, &load_img_req, sizeof(load_img_req))) {
 		pr_err("copy_to_user failed\n");
-		kzfree(entry);
 		ret = -EFAULT;
+		if (first_time == true) {
+		spin_lock_irqsave(
+		&qseecom.registered_app_list_lock, flags);
+		list_del(&entry->list);
+		spin_unlock_irqrestore(
+		&qseecom.registered_app_list_lock, flags);
+		kzfree(entry);
+		}
 	}
 
 loadapp_err:
@@ -2348,8 +2416,18 @@ static int qseecom_unload_app(struct qseecom_dev_handle *data,
 				if (!strcmp((void *)ptr_app->app_name,
 					(void *)data->client.app_name)) {
 					found_app = true;
-					if (app_crash || ptr_app->ref_cnt == 1)
+					if (app_crash || ptr_app->ref_cnt == 1) {
 						unload = true;
+						}
+
+						if (is_runmode_factory() && (1 == snr_flag)) {
+							pr_err("is_runmode_factory true\n");
+							if (!strcmp(ptr_app->app_name, "fingerpr") || !strcmp(ptr_app->app_name, "mainfpr")) {
+								unload = true;
+								pr_err("force to close fingerprint TA when SNR test\n");
+							}
+						}
+
 					break;
 				} else {
 					found_dead_app = true;
@@ -2833,6 +2911,23 @@ static int __qseecom_send_cmd(struct qseecom_dev_handle *data,
 	void *cmd_buf = NULL;
 	size_t cmd_len;
 	struct sglist_info *table = data->sglistinfo_ptr;
+	uint32_t huawei_magicnum;
+/*lint -save -e18 -e49 -e101 -e129 -e145 */
+    ret = copy_from_user(&huawei_magicnum, (void __user *)(req->cmd_req_buf), sizeof(uint32_t));
+    if (ret)
+/*lint -restore*/
+    {
+        pr_err("copy_from_user failed\n");
+        return ret;
+    }
+	if (huawei_magicnum == HUAWEI_TA_MAGIC_NUM)
+	{
+		if (HUAWEI_UID != __kuid_val(current->cred->uid))
+		{
+			pr_err("UID:%u from userspace is error\n", __kuid_val(current->cred->uid));
+			return -EINVAL;
+		}
+	}
 
 	reqd_len_sb_in = req->cmd_req_len + req->resp_len;
 	/* find app_id & img_name from list */
@@ -3322,6 +3417,7 @@ static int __qseecom_update_cmd_buf_64(void *msg, bool cleanup,
 				}
 			}
 			len = QSEECOM_SG_LIST_BUF_HDR_SZ_64BIT;
+			sg = sg_ptr->sgl;
 			goto cleanup;
 		}
 		sg = sg_ptr->sgl;
@@ -4088,12 +4184,21 @@ int qseecom_start_app(struct qseecom_handle **handle,
 	data->client.user_virt_sb_base = 0;
 	data->client.ihandle = NULL;
 
+	/* Allocate sglistinfo buffer for kernel client */
+	data->sglistinfo_ptr = kzalloc(SGLISTINFO_TABLE_SIZE, GFP_KERNEL);
+	if (!(data->sglistinfo_ptr)) {
+		kfree(data);
+		kfree(*handle);
+		*handle = NULL;
+		return -ENOMEM;
+	}
 	init_waitqueue_head(&data->abort_wq);
 
 	data->client.ihandle = ion_alloc(qseecom.ion_clnt, size, 4096,
 				ION_HEAP(ION_QSECOM_HEAP_ID), 0);
 	if (IS_ERR_OR_NULL(data->client.ihandle)) {
 		pr_err("Ion client could not retrieve the handle\n");
+		kfree(data->sglistinfo_ptr);
 		kfree(data);
 		kfree(*handle);
 		*handle = NULL;
@@ -4191,6 +4296,7 @@ int qseecom_start_app(struct qseecom_handle **handle,
 	return 0;
 
 err:
+	kfree(data->sglistinfo_ptr);
 	kfree(data);
 	kfree(*handle);
 	*handle = NULL;
@@ -4238,6 +4344,7 @@ int qseecom_shutdown_app(struct qseecom_handle **handle)
 
 	mutex_unlock(&app_access_lock);
 	if (ret == 0) {
+		kzfree(data->sglistinfo_ptr);
 		kzfree(data);
 		kzfree(*handle);
 		kzfree(kclient);
@@ -7127,8 +7234,10 @@ static int qseecom_open(struct inode *inode, struct file *file)
 	atomic_set(&data->ioctl_count, 0);
 
 	data->sglistinfo_ptr = kzalloc(SGLISTINFO_TABLE_SIZE, GFP_KERNEL);
-	if (!(data->sglistinfo_ptr))
+	if (!(data->sglistinfo_ptr)) {
+		kzfree(data);
 		return -ENOMEM;
+	}
 	return ret;
 }
 
@@ -7992,8 +8101,10 @@ static int qseecom_check_whitelist_feature(void)
 		qseecom.whitelist_support = true;
 		ret = 0;
 	} else {
-		pr_err("Failed to check whitelist: ret = %d, result = 0x%x\n",
+		pr_info("Check whitelist with ret = %d, result = 0x%x\n",
 			ret, resp.result);
+		qseecom.whitelist_support = false;
+		ret = 0;
 	}
 	kfree(buf);
 	return ret;

@@ -3964,7 +3964,14 @@ static void remove_task_from_group(struct task_struct *p)
 
 	if (empty_group) {
 		list_del(&grp->list);
+		/*
+		 * RCU, kswapd etc tasks can get woken up from
+		 * call_rcu(). As the wakeup path also acquires
+		 * the related_thread_group_lock, drop it here.
+		 */
+		write_unlock(&related_thread_group_lock);
 		call_rcu(&grp->rcu, free_related_thread_group);
+		write_lock(&related_thread_group_lock);
 	}
 }
 
@@ -6158,7 +6165,8 @@ static noinline void __schedule_bug(struct task_struct *prev)
 static inline void schedule_debug(struct task_struct *prev)
 {
 #ifdef CONFIG_SCHED_STACK_END_CHECK
-	BUG_ON(unlikely(task_stack_end_corrupted(prev)));
+	if (unlikely(task_stack_end_corrupted(prev)))
+		panic("corrupted stack end detected inside scheduler\n");
 #endif
 	/*
 	 * Test if we are atomic. Since do_exit() needs to call into

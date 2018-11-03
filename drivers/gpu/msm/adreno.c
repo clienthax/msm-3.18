@@ -1,4 +1,4 @@
-/* Copyright (c) 2002,2007-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2002,2007-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -41,6 +41,11 @@
 
 /* Include the master list of GPU cores that are supported */
 #include "adreno-gpulist.h"
+
+#ifdef CONFIG_HUAWEI_DSM
+#include <dsm/dsm_pub.h>
+struct dsm_client* gpu_dclient = NULL;
+#endif
 
 #undef MODULE_PARAM_PREFIX
 #define MODULE_PARAM_PREFIX "adreno."
@@ -388,6 +393,13 @@ static void adreno_input_work(struct work_struct *work)
 	mutex_unlock(&device->mutex);
 }
 
+#if defined(CONFIG_HUAWEI_KERNEL_LCD) || defined(CONFIG_LCDKIT_DRIVER)
+void adreno_force_waking_gpu()
+{
+	schedule_work(&device_3d0.input_work);
+}
+#endif
+
 /*
  * Process input events and schedule work if needed.  At this point we are only
  * interested in groking EV_ABS touchscreen events
@@ -561,6 +573,14 @@ void adreno_hang_int_callback(struct adreno_device *adreno_dev, int bit)
 {
 	KGSL_DRV_CRIT_RATELIMIT(KGSL_DEVICE(adreno_dev),
 			"MISC: GPU hang detected\n");
+
+#ifdef CONFIG_HUAWEI_DSM
+    if (!dsm_client_ocuppy(gpu_dclient)) {
+        dsm_client_record(gpu_dclient, "MISC: GPU hang detected\n");
+        dsm_client_notify(gpu_dclient, DSM_LCD_GPU_HANG_ERROR_NO);
+    }
+#endif
+
 	adreno_irqctrl(adreno_dev, 0);
 
 	/* Trigger a fault in the dispatcher - this will effect a restart */
@@ -579,7 +599,6 @@ void adreno_cp_callback(struct adreno_device *adreno_dev, int bit)
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 
-	kgsl_schedule_work(&device->event_work);
 	adreno_dispatcher_schedule(device);
 }
 
@@ -589,10 +608,23 @@ static irqreturn_t adreno_irq_handler(struct kgsl_device *device)
 	struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 	struct adreno_irq *irq_params = gpudev->irq;
 	irqreturn_t ret = IRQ_NONE;
-	unsigned int status = 0, tmp;
+	unsigned int status = 0, tmp, int_bit;
 	int i;
 
+	atomic_inc(&adreno_dev->pending_irq_refcnt);
+	smp_mb__after_atomic();
+
 	adreno_readreg(adreno_dev, ADRENO_REG_RBBM_INT_0_STATUS, &status);
+
+	/*
+	 * Clear all the interrupt bits but ADRENO_INT_RBBM_AHB_ERROR. Because
+	 * even if we clear it here, it will stay high until it is cleared
+	 * in its respective handler. Otherwise, the interrupt handler will
+	 * fire again.
+	 */
+	int_bit = ADRENO_INT_BIT(adreno_dev, ADRENO_INT_RBBM_AHB_ERROR);
+	adreno_writereg(adreno_dev, ADRENO_REG_RBBM_INT_CLEAR_CMD,
+				status & ~int_bit);
 
 	/* Loop through all set interrupts and call respective handlers */
 	for (tmp = status; tmp != 0;) {
@@ -612,9 +644,18 @@ static irqreturn_t adreno_irq_handler(struct kgsl_device *device)
 
 	gpudev->irq_trace(adreno_dev, status);
 
-	if (status)
+	/*
+	 * Clear ADRENO_INT_RBBM_AHB_ERROR bit after this interrupt has been
+	 * cleared in its respective handler
+	 */
+	if (status & int_bit)
 		adreno_writereg(adreno_dev, ADRENO_REG_RBBM_INT_CLEAR_CMD,
-				status);
+				int_bit);
+
+	smp_mb__before_atomic();
+	atomic_dec(&adreno_dev->pending_irq_refcnt);
+	smp_mb__after_atomic();
+
 	return ret;
 
 }
@@ -933,6 +974,14 @@ static int adreno_probe(struct platform_device *pdev)
 	struct adreno_device *adreno_dev;
 	int status;
 
+#ifdef CONFIG_HUAWEI_DSM
+    struct dsm_dev dsm_gpu = {
+        .name = "dsm_gpu",
+        .fops = NULL,
+        .buff_size = 1024,
+    };
+#endif
+
 	adreno_dev = adreno_get_dev(pdev);
 
 	if (adreno_dev == NULL) {
@@ -1011,6 +1060,12 @@ out:
 		kgsl_device_platform_remove(device);
 		device->pdev = NULL;
 	}
+
+#ifdef CONFIG_HUAWEI_DSM
+    if (!gpu_dclient) {
+        gpu_dclient = dsm_register_client(&dsm_gpu);
+    }
+#endif
 
 	return status;
 }
@@ -2054,7 +2109,7 @@ static int adreno_setproperty(struct kgsl_device_private *dev_priv,
 							KGSL_STATE_ACTIVE);
 				device->pwrctrl.ctrl_flags = KGSL_PWR_ON;
 				adreno_fault_detect_stop(adreno_dev);
-				kgsl_pwrscale_disable(device);
+				kgsl_pwrscale_disable(device, true);
 			}
 
 			mutex_unlock(&device->mutex);
@@ -2106,7 +2161,18 @@ inline unsigned int adreno_irq_pending(struct adreno_device *adreno_dev)
 
 	adreno_readreg(adreno_dev, ADRENO_REG_RBBM_INT_0_STATUS, &status);
 
-	return (status & gpudev->irq->mask) ? 1 : 0;
+	/*
+	 * IRQ handler clears the RBBM INT0 status register immediately
+	 * entering the ISR before actually serving the interrupt because
+	 * of this we can't rely only on RBBM INT0 status only.
+	 * Use pending_irq_refcnt along with RBBM INT0 to correctly
+	 * determine whether any IRQ is pending or not.
+	 */
+	if ((status & gpudev->irq->mask) ||
+		atomic_read(&adreno_dev->pending_irq_refcnt))
+		return 1;
+	else
+		return 0;
 }
 
 
@@ -2778,6 +2844,18 @@ static void adreno_regulator_disable_poll(struct kgsl_device *device)
 	adreno_iommu_sync(device, false);
 }
 
+static void adreno_gpu_model(struct kgsl_device *device, char *str,
+				size_t bufsz)
+{
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
+
+	snprintf(str, bufsz, "Adreno%d%d%dv%d",
+			ADRENO_CHIPID_CORE(adreno_dev->chipid),
+			 ADRENO_CHIPID_MAJOR(adreno_dev->chipid),
+			 ADRENO_CHIPID_MINOR(adreno_dev->chipid),
+			 ADRENO_CHIPID_PATCH(adreno_dev->chipid) + 1);
+}
+
 static const struct kgsl_functable adreno_functable = {
 	/* Mandatory functions */
 	.regread = adreno_regread,
@@ -2814,6 +2892,7 @@ static const struct kgsl_functable adreno_functable = {
 	.regulator_disable = adreno_regulator_disable,
 	.pwrlevel_change_settings = adreno_pwrlevel_change_settings,
 	.regulator_disable_poll = adreno_regulator_disable_poll,
+	.gpu_model = adreno_gpu_model,
 };
 
 static struct platform_driver adreno_platform_driver = {

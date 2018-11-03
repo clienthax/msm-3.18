@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -681,6 +681,13 @@ struct diag_cmd_reg_entry_t *diag_cmd_search(
 			    temp_entry->cmd_code_hi >= entry->cmd_code_hi &&
 			    temp_entry->cmd_code_lo <= entry->cmd_code_lo &&
 			    (proc == item->proc || proc == ALL_PROC)) {
+				return &item->entry;
+			}
+		} else if(temp_entry->cmd_code == DIAG_CMD_NO_SUBSYS &&
+			   temp_entry->subsys_id == 0xF6 && entry->cmd_code == 0xF6){
+			if(temp_entry->cmd_code_hi >= entry->subsys_id &&
+			   temp_entry->cmd_code_lo <= entry->subsys_id &&
+			   (proc == item->proc || proc == ALL_PROC)){
 				return &item->entry;
 			}
 		} else if (temp_entry->cmd_code == DIAG_CMD_NO_SUBSYS &&
@@ -3312,7 +3319,7 @@ static int diagchar_cleanup(void)
 static int __init diagchar_init(void)
 {
 	dev_t dev;
-	int error, ret;
+	int error, ret, i;
 
 	pr_debug("diagfwd initializing ..\n");
 	ret = 0;
@@ -3357,7 +3364,8 @@ static int __init diagchar_init(void)
 	mutex_init(&driver->diag_file_mutex);
 	mutex_init(&driver->delayed_rsp_mutex);
 	mutex_init(&apps_data_mutex);
-	mutex_init(&driver->diagfwd_channel_mutex);
+	for (i = 0; i < NUM_PERIPHERALS; i++)
+	mutex_init(&driver->diagfwd_channel_mutex[i]);
 	init_waitqueue_head(&driver->wait_q);
 	INIT_WORK(&(driver->diag_drain_work), diag_drain_work_fn);
 	INIT_WORK(&(driver->update_user_clients),

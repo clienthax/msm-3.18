@@ -101,6 +101,7 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_STAC9766 if SND_SOC_AC97_BUS
 	select SND_SOC_TAS2552 if I2C
 	select SND_SOC_TAS5086 if I2C
+	select SND_SOC_TAS2560 if I2C
 	select SND_SOC_TLV320AIC23_I2C if I2C
 	select SND_SOC_TLV320AIC23_SPI if SPI_MASTER
 	select SND_SOC_TLV320AIC26 if SPI_MASTER
@@ -440,6 +441,22 @@ config SND_SOC_MAX98090
 config SND_SOC_MAX98095
        tristate
 
+config SND_SOC_MAX98925
+	bool "Support MAX98925 smartpa system"
+	depends on I2C
+	help
+	MAX98925 driver for smartpa system.
+
+config SND_SOC_TFA98XX
+	tristate "NXP TFA98XX smart amplifier"
+	depends on I2C
+
+config SND_SOC_VRM
+	bool "Support vrm detection system"
+	depends on I2C
+	help
+	vrm driver for vrm detection system.
+
 config SND_SOC_MAX9850
 	tristate
 
@@ -575,6 +592,10 @@ config SND_SOC_TAS2552
 
 config SND_SOC_TAS5086
 	tristate "Texas Instruments TAS5086 speaker amplifier"
+	depends on I2C
+
+config SND_SOC_TAS2560
+	tristate "Texas Instruments TAS2560 speaker amplifier"
 	depends on I2C
 
 config SND_SOC_TLV320AIC23
